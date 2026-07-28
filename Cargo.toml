@@ -1,11 +1,9 @@
-[package]
-edition.workspace = true
-name = "ren"
-version.workspace = true
-
 [workspace]
-members = ["."]
+members = ["ren"]
 resolver = "3"
+
+[workspace.dependencies]
+clap = { version = "4.6.4", features = ["derive"] }
 
 [workspace.lints.clippy]
 all = "deny"
@@ -25,6 +23,3 @@ unused = "deny"
 [workspace.package]
 edition = "2024"
 version = "0.0.0"
-
-[lints]
-workspace = true

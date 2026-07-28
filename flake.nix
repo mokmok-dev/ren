@@ -2,7 +2,7 @@
   inputs.nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
 
   outputs =
-    { nixpkgs, ... }:
+    { self, nixpkgs, ... }:
     let
       supportedSystems = [
         "aarch64-darwin"
@@ -13,6 +13,33 @@
       pkgsFor = system: nixpkgs.legacyPackages.${system};
     in
     {
+      packages = forAllSystems (
+        system:
+        let
+          ren = (pkgsFor system).callPackage ./nix/package.nix { };
+        in
+        {
+          default = ren;
+          inherit ren;
+        }
+      );
+
+      apps = forAllSystems (
+        system:
+        let
+          pkgs = pkgsFor system;
+          ren = self.packages.${system}.default;
+          app = {
+            type = "app";
+            program = pkgs.lib.getExe ren;
+          };
+        in
+        {
+          default = app;
+          ren = app;
+        }
+      );
+
       devShells = forAllSystems (
         system:
         let
