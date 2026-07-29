@@ -18,6 +18,7 @@ use crate::{
 const REGISTRY_SCHEMA: &str = "ren-memory-registry/v1";
 const CONFIG_SCHEMA: &str = "ren-memory-config/v1";
 const PROMOTION_WORKFLOW: &str = include_str!("../bundled/zettelkasten-promote.rhai");
+const MAX_GIT_POINTER_BYTES: u64 = 4096;
 
 #[derive(Clone, Debug, Deserialize)]
 struct MemoryConfig {
@@ -36,6 +37,12 @@ struct HookPolicy {
     allow_paths: Vec<PathBuf>,
     #[serde(default)]
     deny_paths: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+struct GitRepository {
+    common_dir: PathBuf,
+    primary_worktree: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -262,6 +269,9 @@ impl MemoryHome {
         if let Some((id, entry)) = matches.first() {
             return vault_from_entry(id, entry);
         }
+        if let Some(vault) = resolve_git_worktree(&registry, &canonical_cwd)? {
+            return Ok(vault);
+        }
         if registry.vaults.len() == 1 {
             let (id, entry) = registry
                 .vaults
@@ -338,11 +348,10 @@ impl MemoryHome {
             .collect::<Vec<_>>();
         matches
             .sort_by_key(|(_, entry)| std::cmp::Reverse(entry.project_path.components().count()));
-        matches
-            .first()
-            .map_or(Err(MemoryError::VaultNotFound), |(id, entry)| {
-                vault_from_entry(id, entry)
-            })
+        if let Some((id, entry)) = matches.first() {
+            return vault_from_entry(id, entry);
+        }
+        resolve_git_worktree(&registry, &canonical_cwd)?.ok_or(MemoryError::VaultNotFound)
     }
 
     fn load_config(&self) -> Result<MemoryConfig> {
@@ -545,6 +554,86 @@ fn canonical_directory(path: &Path) -> Result<PathBuf> {
         )));
     }
     Ok(canonical)
+}
+
+fn resolve_git_worktree(
+    registry: &Registry,
+    cwd: &Path,
+) -> Result<Option<Vault>> {
+    let Some(repository) = git_repository(cwd) else {
+        return Ok(None);
+    };
+    let mut matches = registry
+        .vaults
+        .iter()
+        .filter_map(|(id, entry)| {
+            let candidate = git_repository(&entry.project_path)?;
+            (candidate.common_dir == repository.common_dir).then_some((id, entry, candidate))
+        })
+        .collect::<Vec<_>>();
+    if matches.len() > 1 {
+        matches.retain(|(_, _, candidate)| candidate.primary_worktree);
+    }
+    match matches.as_slice() {
+        [] => Ok(None),
+        [(id, entry, _)] => vault_from_entry(id, entry).map(Some),
+        _ => Err(MemoryError::AmbiguousVault),
+    }
+}
+
+fn git_repository(start: &Path) -> Option<GitRepository> {
+    let canonical_start = fs::canonicalize(start).ok()?;
+    let worktree = canonical_start
+        .ancestors()
+        .find(|ancestor| ancestor.join(".git").exists())?;
+    let dot_git = worktree.join(".git");
+    let metadata = fs::metadata(&dot_git).ok()?;
+    let (git_dir, primary_worktree) = if metadata.is_dir() {
+        (fs::canonicalize(&dot_git).ok()?, true)
+    } else if metadata.is_file() {
+        let pointer = read_small_text(&dot_git)?;
+        let path = pointer.trim().strip_prefix("gitdir:")?.trim();
+        if path.is_empty() {
+            return None;
+        }
+        let path = Path::new(path);
+        let resolved = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            worktree.join(path)
+        };
+        (fs::canonicalize(resolved).ok()?, false)
+    } else {
+        return None;
+    };
+    let common_dir_file = git_dir.join("commondir");
+    let common_dir = if common_dir_file.is_file() {
+        let path = read_small_text(&common_dir_file)?;
+        let path = Path::new(path.trim());
+        if path.as_os_str().is_empty() {
+            return None;
+        }
+        let resolved = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            git_dir.join(path)
+        };
+        fs::canonicalize(resolved).ok()?
+    } else {
+        git_dir
+    };
+    Some(GitRepository {
+        common_dir,
+        primary_worktree,
+    })
+}
+
+fn read_small_text(path: &Path) -> Option<String> {
+    let metadata = fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_GIT_POINTER_BYTES {
+        return None;
+    }
+    fs::read_to_string(path).ok()
 }
 
 fn default_id(project_path: &Path) -> String {
