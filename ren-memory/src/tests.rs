@@ -133,6 +133,48 @@ fn registry_and_layout_are_user_scoped_and_resolvable() -> crate::error::Result<
 }
 
 #[test]
+fn linked_git_worktree_resolves_the_primary_worktree_vault() -> crate::error::Result<()> {
+    let temporary = tempfile::tempdir().map_err(|error| crate::MemoryError::io(".", error))?;
+    let primary = temporary.path().join("repository");
+    let common_dir = primary.join(".git");
+    fs::create_dir_all(&common_dir).map_err(|error| crate::MemoryError::io(&common_dir, error))?;
+    let linked = temporary.path().join("repository-worktree");
+    fs::create_dir(&linked).map_err(|error| crate::MemoryError::io(&linked, error))?;
+    let linked_git_dir = common_dir.join("worktrees/repository-worktree");
+    fs::create_dir_all(&linked_git_dir)
+        .map_err(|error| crate::MemoryError::io(&linked_git_dir, error))?;
+    fs::write(
+        linked.join(".git"),
+        format!("gitdir: {}\n", linked_git_dir.display()),
+    )
+    .map_err(|error| crate::MemoryError::io(linked.join(".git"), error))?;
+    fs::write(linked_git_dir.join("commondir"), "../..\n")
+        .map_err(|error| crate::MemoryError::io(linked_git_dir.join("commondir"), error))?;
+
+    let home = MemoryHome {
+        root: temporary.path().join("memory"),
+    };
+    let primary_vault = home.register(Some("primary"), None, &primary)?;
+    let other_linked = temporary.path().join("other-worktree");
+    fs::create_dir(&other_linked).map_err(|error| crate::MemoryError::io(&other_linked, error))?;
+    let other_git_dir = common_dir.join("worktrees/other-worktree");
+    fs::create_dir_all(&other_git_dir)
+        .map_err(|error| crate::MemoryError::io(&other_git_dir, error))?;
+    fs::write(
+        other_linked.join(".git"),
+        format!("gitdir: {}\n", other_git_dir.display()),
+    )
+    .map_err(|error| crate::MemoryError::io(other_linked.join(".git"), error))?;
+    fs::write(other_git_dir.join("commondir"), "../..\n")
+        .map_err(|error| crate::MemoryError::io(other_git_dir.join("commondir"), error))?;
+    home.register(Some("other-linked"), None, &other_linked)?;
+
+    assert_eq!(home.resolve_or_register_hint(&linked)?.id, primary_vault.id);
+    assert_eq!(home.resolve(None, &linked)?.id, primary_vault.id);
+    Ok(())
+}
+
+#[test]
 fn incremental_index_supports_search_and_graph_queries() -> crate::error::Result<()> {
     let (_temporary, _home, vault) = fixture()?;
     let target = note(
