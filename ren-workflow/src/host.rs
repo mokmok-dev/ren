@@ -2,7 +2,6 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::HostError;
 
@@ -136,8 +135,10 @@ impl Host for EchoHost {
         &self,
         request: &AgentRequest,
     ) -> Result<AgentResult, HostError> {
-        let digest = Sha256::digest(request.prompt.as_bytes());
-        let agent_id = format!("echo-{digest:x}");
+        let agent_id = format!(
+            "echo-{}",
+            crate::hash::sha256_hex(request.prompt.as_bytes())
+        );
         let tokens_used = u64::try_from(request.prompt.split_whitespace().count())
             .map_err(|error| HostError::new(error.to_string()))?;
 

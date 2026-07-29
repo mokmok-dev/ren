@@ -6,7 +6,6 @@ use rhai::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::{
     AgentOptions, AgentRequest, AgentResult, Capability, Host, Journal, JournalEntry, ParallelSlot,
@@ -716,7 +715,7 @@ fn register_host_api<H>(
     );
 
     engine.register_fn("fingerprint", |text: ImmutableString| -> ImmutableString {
-        format!("{:x}", Sha256::digest(text.as_bytes())).into()
+        crate::hash::sha256_hex(text.as_bytes()).into()
     });
 
     let state = Rc::clone(runtime);
