@@ -27,8 +27,9 @@ pub use error::{HostError, WorkflowError};
 pub use guide::{AUTHORING_MD, PROTOCOL_MD};
 pub use host::{AgentOptions, AgentRequest, AgentResult, Capability, EchoHost, Host};
 pub use init::{
-    EmbeddedSkill, InitScope, SKILL_FILES, SKILL_MD, SkillDefinition, SkillFile, WORKFLOW_SKILL,
-    install_skill, install_skills, skill_definition, skill_definition_for, supported_agents,
+    EmbeddedSkill, InitScope, OPENAI_YAML, SKILL_FILES, SKILL_MD, SkillDefinition, SkillFile,
+    WORKFLOW_SKILL, install_skill, install_skills, skill_definition, skill_definition_for,
+    supported_agents,
 };
 pub use journal::{Journal, JournalEntry, ParallelSlot};
 pub use meta::{MetaPhase, WorkflowMeta};
@@ -268,8 +269,9 @@ pub fn run_protocol(args: &ProtocolArgs) -> Result<(), WorkflowError> {
 ///
 /// Returns [`WorkflowError::HomeUnavailable`] when user scope is requested but
 /// `$HOME` is unset, [`WorkflowError::SkillExists`] when a file has different
-/// contents without `--force`, or [`WorkflowError::Io`] on other filesystem
-/// failures.
+/// contents without `--force`, [`WorkflowError::UnsafeSkillPath`] when a target
+/// path contains a symbolic link or escapes its installation base, or
+/// [`WorkflowError::Io`] on other filesystem failures.
 pub fn run_init(args: &InitArgs) -> Result<(), WorkflowError> {
     run_init_with_skills(args, &[])
 }

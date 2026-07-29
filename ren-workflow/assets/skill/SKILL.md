@@ -10,7 +10,7 @@ description: >
   "ren workflow run/list/create/init", ".ren/workflows", "rhai workflow".
 ---
 
-# ren workflow
+# ren-workflow
 
 `ren` runs **deterministic** workflows written in Rhai that orchestrate
 coding-agent calls. This skill is intentionally thin: **the `ren` binary is the

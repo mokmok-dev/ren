@@ -1,8 +1,4 @@
-use std::{
-    fs::{self, OpenOptions},
-    io::{self, ErrorKind, Write as _},
-    path::{Path, PathBuf},
-};
+use std::path::{Component, Path, PathBuf};
 
 use crate::{WorkflowError, bridge::Agent};
 
@@ -17,6 +13,9 @@ const SKILL_NAME: &str = "ren-workflow";
 /// injected `agent_protocol` are the version-matched source of truth. Rich,
 /// version-sensitive guidance lives in [`crate::guide`], not in this file.
 pub const SKILL_MD: &str = include_str!("../assets/skill/SKILL.md");
+
+/// UI-facing metadata installed alongside [`SKILL_MD`].
+pub const OPENAI_YAML: &str = include_str!("../assets/skill/agents/openai.yaml");
 
 /// A single embedded skill file and its path relative to the skill folder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,10 +36,16 @@ pub struct EmbeddedSkill {
 }
 
 /// Every file that makes up the embedded skill.
-pub const SKILL_FILES: &[SkillFile] = &[SkillFile {
-    relative: "SKILL.md",
-    contents: SKILL_MD,
-}];
+pub const SKILL_FILES: &[SkillFile] = &[
+    SkillFile {
+        relative: "SKILL.md",
+        contents: SKILL_MD,
+    },
+    SkillFile {
+        relative: "agents/openai.yaml",
+        contents: OPENAI_YAML,
+    },
+];
 
 /// The embedded `ren-workflow` skill.
 pub const WORKFLOW_SKILL: EmbeddedSkill = EmbeddedSkill {
@@ -60,6 +65,8 @@ pub enum InitScope {
 /// The resolved plan for installing the skill for one agent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SkillDefinition {
+    /// Filesystem authority beneath which every target must remain.
+    pub base_dir: PathBuf,
     /// The `<agent>/skills/<skill-name>` folder that receives the skill.
     pub dir: PathBuf,
     /// Absolute paths and contents of every file to write.
@@ -111,7 +118,11 @@ pub fn skill_definition_for(
         .iter()
         .map(|file| (join_relative(&dir, file.relative), file.contents))
         .collect();
-    SkillDefinition { dir, files }
+    SkillDefinition {
+        base_dir: base_dir.to_path_buf(),
+        dir,
+        files,
+    }
 }
 
 /// Joins a `/`-separated relative path onto `base` in a platform-correct way.
@@ -135,8 +146,9 @@ fn join_relative(
 /// # Errors
 ///
 /// Returns [`WorkflowError::SkillExists`] when a target file has different
-/// contents and `force` is false, or [`WorkflowError::Io`] when a filesystem
-/// operation fails.
+/// contents and `force` is false, [`WorkflowError::UnsafeSkillPath`] when a
+/// target traverses a symbolic link or escapes its base directory, or
+/// [`WorkflowError::Io`] when a filesystem operation fails.
 pub fn install_skill(
     definition: &SkillDefinition,
     force: bool,
@@ -156,111 +168,683 @@ pub fn install_skills(
     definitions: &[SkillDefinition],
     force: bool,
 ) -> Result<(), WorkflowError> {
-    let pending = preflight_install(definitions, force)?;
-    let mut completed = Vec::new();
-    for file in &pending {
-        if let Some(parent) = file.path.parent()
-            && let Err(error) = fs::create_dir_all(parent)
-        {
-            return Err(rollback_after(error, &completed));
-        }
+    install_skills_inner(definitions, force, || {})
+}
 
-        if file.previous.is_some() {
-            completed.push(file);
-            if let Err(error) = fs::write(&file.path, file.contents) {
-                return Err(rollback_after(error, &completed));
+#[cfg(test)]
+pub fn install_skills_with_pre_apply_hook(
+    definitions: &[SkillDefinition],
+    force: bool,
+    before_apply: impl FnOnce(),
+) -> Result<(), WorkflowError> {
+    install_skills_inner(definitions, force, before_apply)
+}
+
+fn install_skills_inner(
+    definitions: &[SkillDefinition],
+    force: bool,
+    before_apply: impl FnOnce(),
+) -> Result<(), WorkflowError> {
+    validate_definitions(definitions)?;
+    platform::install(definitions, force, before_apply)
+}
+
+fn validate_definitions(definitions: &[SkillDefinition]) -> Result<(), WorkflowError> {
+    for definition in definitions {
+        if definition.base_dir.as_os_str().is_empty()
+            || !is_safe_relative(
+                definition
+                    .dir
+                    .strip_prefix(&definition.base_dir)
+                    .map_err(|_| WorkflowError::UnsafeSkillPath(definition.dir.clone()))?,
+            )
+        {
+            return Err(WorkflowError::UnsafeSkillPath(definition.dir.clone()));
+        }
+        for (path, _) in &definition.files {
+            let relative = path
+                .strip_prefix(&definition.base_dir)
+                .map_err(|_| WorkflowError::UnsafeSkillPath(path.clone()))?;
+            if !path.starts_with(&definition.dir) || !is_safe_relative(relative) {
+                return Err(WorkflowError::UnsafeSkillPath(path.clone()));
             }
-            continue;
-        }
-
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&file.path)
-        {
-            Ok(mut target) => {
-                completed.push(file);
-                if let Err(error) = target.write_all(file.contents.as_bytes()) {
-                    return Err(rollback_after(error, &completed));
-                }
-            },
-            Err(error) => return Err(rollback_after(error, &completed)),
         }
     }
     Ok(())
 }
 
-#[derive(Debug)]
-struct PendingSkillFile {
-    path: PathBuf,
-    contents: &'static str,
-    previous: Option<Vec<u8>>,
+fn is_safe_relative(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
 }
 
-/// Returns only the files that need writing after checking every target.
-fn preflight_install(
-    definitions: &[SkillDefinition],
-    force: bool,
-) -> Result<Vec<PendingSkillFile>, WorkflowError> {
-    let mut pending = Vec::new();
-    for definition in definitions {
-        for (path, contents) in &definition.files {
-            match fs::read(path) {
-                Ok(installed) if installed == contents.as_bytes() => {},
-                Ok(_) if !force => return Err(WorkflowError::SkillExists(path.clone())),
-                Ok(installed) => pending.push(PendingSkillFile {
-                    path: path.clone(),
-                    contents,
-                    previous: Some(installed),
-                }),
-                Err(error) if error.kind() == ErrorKind::NotFound => {
-                    pending.push(PendingSkillFile {
+#[cfg(unix)]
+mod platform {
+    use std::{
+        ffi::{OsStr, OsString},
+        fs::{self, File, Metadata},
+        io::{self, Read as _, Seek as _, SeekFrom, Write as _},
+        os::unix::fs::MetadataExt as _,
+        path::{Path, PathBuf},
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
+    };
+
+    use rustix::{
+        fs::{AtFlags, Mode, OFlags, mkdirat, open, openat, renameat, unlinkat},
+        io::Errno,
+    };
+
+    use super::{SkillDefinition, WorkflowError};
+
+    const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
+        .union(OFlags::DIRECTORY)
+        .union(OFlags::NOFOLLOW)
+        .union(OFlags::CLOEXEC);
+    const READ_FLAGS: OFlags = OFlags::RDONLY
+        .union(OFlags::NOFOLLOW)
+        .union(OFlags::NONBLOCK)
+        .union(OFlags::CLOEXEC);
+    const CREATE_FLAGS: OFlags = OFlags::WRONLY
+        .union(OFlags::CREATE)
+        .union(OFlags::EXCL)
+        .union(OFlags::NOFOLLOW)
+        .union(OFlags::CLOEXEC);
+    /// Existing skill files are tiny text assets. Bounding rollback capture
+    /// prevents a hostile sparse or device-like target from consuming memory.
+    const MAX_EXISTING_SKILL_BYTES: u64 = 1024 * 1024;
+    const TEMP_ATTEMPTS: u64 = 128;
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn install(
+        definitions: &[SkillDefinition],
+        force: bool,
+        before_apply: impl FnOnce(),
+    ) -> Result<(), WorkflowError> {
+        let mut created_dirs = Vec::new();
+        let pending = match preflight(definitions, force, &mut created_dirs) {
+            Ok(pending) => pending,
+            Err(error) => {
+                return Err(with_rollback_error(
+                    error,
+                    cleanup_directories(&created_dirs),
+                ));
+            },
+        };
+
+        before_apply();
+        apply(pending, &created_dirs)
+    }
+
+    #[derive(Debug)]
+    struct RootHandle {
+        path: PathBuf,
+        dir: File,
+        identity: Identity,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Identity {
+        device: u64,
+        inode: u64,
+    }
+
+    #[derive(Debug)]
+    struct PendingSkillFile {
+        root: Arc<RootHandle>,
+        parent: File,
+        parent_relative: PathBuf,
+        name: OsString,
+        path: PathBuf,
+        contents: &'static str,
+        previous: Option<Vec<u8>>,
+        target: Option<File>,
+    }
+
+    #[derive(Debug)]
+    struct CreatedDirectory {
+        parent: File,
+        name: OsString,
+        path: PathBuf,
+        identity: Identity,
+    }
+
+    fn preflight(
+        definitions: &[SkillDefinition],
+        force: bool,
+        created_dirs: &mut Vec<CreatedDirectory>,
+    ) -> Result<Vec<PendingSkillFile>, WorkflowError> {
+        let mut pending = Vec::new();
+        for definition in definitions {
+            let root = Arc::new(open_root(&definition.base_dir)?);
+            for (path, contents) in &definition.files {
+                let relative = path
+                    .strip_prefix(&definition.base_dir)
+                    .map_err(|_| WorkflowError::UnsafeSkillPath(path.clone()))?;
+                let parent_relative = relative
+                    .parent()
+                    .ok_or_else(|| WorkflowError::UnsafeSkillPath(path.clone()))?;
+                let name = relative
+                    .file_name()
+                    .ok_or_else(|| WorkflowError::UnsafeSkillPath(path.clone()))?
+                    .to_os_string();
+                let parent = open_or_create_directories(
+                    &root.dir,
+                    &root.path,
+                    parent_relative,
+                    created_dirs,
+                )?;
+                match read_target(&parent, &name, path)? {
+                    Some((installed, read_target)) if installed == contents.as_bytes() => {
+                        drop(read_target);
+                    },
+                    Some((_, _)) if !force => {
+                        return Err(WorkflowError::SkillExists(path.clone()));
+                    },
+                    Some((installed, read_target)) => {
+                        pending.push(PendingSkillFile {
+                            root: Arc::clone(&root),
+                            parent,
+                            parent_relative: parent_relative.to_path_buf(),
+                            name,
+                            path: path.clone(),
+                            contents,
+                            previous: Some(installed),
+                            target: Some(read_target),
+                        });
+                    },
+                    None => pending.push(PendingSkillFile {
+                        root: Arc::clone(&root),
+                        parent,
+                        parent_relative: parent_relative.to_path_buf(),
+                        name,
                         path: path.clone(),
                         contents,
                         previous: None,
-                    });
-                },
-                Err(error) => return Err(WorkflowError::Io(error)),
+                        target: None,
+                    }),
+                }
             }
         }
+        Ok(pending)
     }
-    Ok(pending)
-}
 
-/// Restores all targets touched by the failed batch in reverse order.
-fn rollback_after(
-    install_error: io::Error,
-    completed: &[&PendingSkillFile],
-) -> WorkflowError {
-    let mut rollback_error = None;
-    for file in completed.iter().rev() {
-        let result = file.previous.as_ref().map_or_else(
-            || {
-                fs::remove_file(&file.path).or_else(|error| {
-                    if error.kind() == ErrorKind::NotFound {
-                        Ok(())
-                    } else {
-                        Err(error)
+    fn open_root(path: &Path) -> Result<RootHandle, WorkflowError> {
+        let canonical = fs::canonicalize(path)?;
+        let dir = open_absolute_directory(&canonical)?;
+        let metadata = dir.metadata()?;
+        if !metadata.is_dir() {
+            return Err(WorkflowError::UnsafeSkillPath(path.to_path_buf()));
+        }
+        Ok(RootHandle {
+            path: canonical,
+            identity: identity(&metadata),
+            dir,
+        })
+    }
+
+    /// Opens an absolute directory one component at a time from a stable `/`
+    /// descriptor. A canonical path is used so legitimate system aliases such
+    /// as macOS `/var` remain supported, while every traversed component is
+    /// still opened with `O_NOFOLLOW`.
+    fn open_absolute_directory(path: &Path) -> Result<File, WorkflowError> {
+        if !path.is_absolute() {
+            return Err(WorkflowError::UnsafeSkillPath(path.to_path_buf()));
+        }
+        let root = open(Path::new("/"), DIRECTORY_FLAGS, Mode::empty())
+            .map(File::from)
+            .map_err(|error| component_error(error, Path::new("/")))?;
+        let mut current = root;
+        let mut display = PathBuf::from("/");
+        for component in path.components() {
+            match component {
+                std::path::Component::RootDir => {},
+                std::path::Component::Normal(name) => {
+                    display.push(name);
+                    current = openat(&current, name, DIRECTORY_FLAGS, Mode::empty())
+                        .map(File::from)
+                        .map_err(|error| component_error(error, &display))?;
+                },
+                _ => return Err(WorkflowError::UnsafeSkillPath(path.to_path_buf())),
+            }
+        }
+        Ok(current)
+    }
+
+    fn open_or_create_directories(
+        root: &File,
+        root_path: &Path,
+        relative: &Path,
+        created_dirs: &mut Vec<CreatedDirectory>,
+    ) -> Result<File, WorkflowError> {
+        let mut current = root.try_clone()?;
+        let mut display = root_path.to_path_buf();
+        for component in relative.components() {
+            let name = component.as_os_str();
+            display.push(name);
+            match openat(&current, name, DIRECTORY_FLAGS, Mode::empty()) {
+                Ok(fd) => current = File::from(fd),
+                Err(Errno::NOENT) => {
+                    let created = match mkdirat(&current, name, Mode::from_raw_mode(0o755)) {
+                        Ok(()) => true,
+                        Err(Errno::EXIST) => false,
+                        Err(error) => return Err(WorkflowError::Io(error.into())),
+                    };
+                    let child = openat(&current, name, DIRECTORY_FLAGS, Mode::empty())
+                        .map(File::from)
+                        .map_err(|error| component_error(error, &display))?;
+                    let metadata = child.metadata()?;
+                    if !metadata.is_dir() {
+                        return Err(WorkflowError::UnsafeSkillPath(display));
                     }
-                })
-            },
-            |contents| fs::write(&file.path, contents),
-        );
-        if let Err(error) = result
+                    if created {
+                        created_dirs.push(CreatedDirectory {
+                            parent: current.try_clone()?,
+                            name: name.to_os_string(),
+                            path: display.clone(),
+                            identity: identity(&metadata),
+                        });
+                    }
+                    current = child;
+                },
+                Err(error) => return Err(component_error(error, &display)),
+            }
+        }
+        Ok(current)
+    }
+
+    fn read_target(
+        parent: &File,
+        name: &OsStr,
+        path: &Path,
+    ) -> Result<Option<(Vec<u8>, File)>, WorkflowError> {
+        let mut target = match openat(parent, name, READ_FLAGS, Mode::empty()) {
+            Ok(fd) => File::from(fd),
+            Err(Errno::NOENT) => return Ok(None),
+            Err(error) => return Err(component_error(error, path)),
+        };
+        let metadata = target.metadata()?;
+        if !metadata.is_file() || metadata.nlink() != 1 {
+            return Err(WorkflowError::UnsafeSkillPath(path.to_path_buf()));
+        }
+        if metadata.len() > MAX_EXISTING_SKILL_BYTES {
+            return Err(WorkflowError::UnsafeSkillPath(path.to_path_buf()));
+        }
+        let mut installed = Vec::new();
+        std::io::Read::by_ref(&mut target)
+            .take(MAX_EXISTING_SKILL_BYTES + 1)
+            .read_to_end(&mut installed)?;
+        if u64::try_from(installed.len()).unwrap_or(u64::MAX) > MAX_EXISTING_SKILL_BYTES {
+            return Err(WorkflowError::UnsafeSkillPath(path.to_path_buf()));
+        }
+        Ok(Some((installed, target)))
+    }
+
+    fn open_existing_target(
+        parent: &File,
+        name: &OsStr,
+        path: &Path,
+        flags: OFlags,
+    ) -> Result<File, WorkflowError> {
+        let target = openat(parent, name, flags, Mode::empty())
+            .map(File::from)
+            .map_err(|error| component_error(error, path))?;
+        let metadata = target.metadata()?;
+        if !metadata.is_file() || metadata.nlink() != 1 {
+            return Err(WorkflowError::UnsafeSkillPath(path.to_path_buf()));
+        }
+        Ok(target)
+    }
+
+    fn apply(
+        mut pending: Vec<PendingSkillFile>,
+        created_dirs: &[CreatedDirectory],
+    ) -> Result<(), WorkflowError> {
+        let mut completed = Vec::new();
+        for index in 0..pending.len() {
+            if let Err(error) = verify_pending_path(&pending[index]) {
+                return Err(rollback_after(
+                    error,
+                    &mut pending,
+                    &completed,
+                    created_dirs,
+                ));
+            }
+
+            if pending[index].previous.is_some() {
+                let (temporary_name, replacement) = match create_replacement(&pending[index]) {
+                    Ok(replacement) => replacement,
+                    Err(error) => {
+                        return Err(rollback_after(
+                            error,
+                            &mut pending,
+                            &completed,
+                            created_dirs,
+                        ));
+                    },
+                };
+                if let Err(error) = verify_pending_path(&pending[index]) {
+                    let cleanup_error =
+                        unlinkat(&pending[index].parent, &temporary_name, AtFlags::empty())
+                            .err()
+                            .map(io::Error::from);
+                    return Err(rollback_after(
+                        with_rollback_error(error, cleanup_error),
+                        &mut pending,
+                        &completed,
+                        created_dirs,
+                    ));
+                }
+                if let Err(error) = renameat(
+                    &pending[index].parent,
+                    &temporary_name,
+                    &pending[index].parent,
+                    &pending[index].name,
+                ) {
+                    let cleanup_error =
+                        unlinkat(&pending[index].parent, &temporary_name, AtFlags::empty())
+                            .err()
+                            .map(io::Error::from);
+                    return Err(rollback_after(
+                        with_rollback_error(
+                            component_error(error, &pending[index].path),
+                            cleanup_error,
+                        ),
+                        &mut pending,
+                        &completed,
+                        created_dirs,
+                    ));
+                }
+                pending[index].target = Some(replacement);
+            } else {
+                let target = match openat(
+                    &pending[index].parent,
+                    &pending[index].name,
+                    CREATE_FLAGS,
+                    Mode::from_raw_mode(0o644),
+                ) {
+                    Ok(fd) => File::from(fd),
+                    Err(error) => {
+                        return Err(rollback_after(
+                            component_error(error, &pending[index].path),
+                            &mut pending,
+                            &completed,
+                            created_dirs,
+                        ));
+                    },
+                };
+                pending[index].target = Some(target);
+                if let Err(error) = write_contents(&mut pending[index]) {
+                    completed.push(index);
+                    return Err(rollback_after(
+                        error,
+                        &mut pending,
+                        &completed,
+                        created_dirs,
+                    ));
+                }
+            }
+            completed.push(index);
+            if let Err(error) = verify_pending_path(&pending[index]) {
+                return Err(rollback_after(
+                    error,
+                    &mut pending,
+                    &completed,
+                    created_dirs,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn create_replacement(pending: &PendingSkillFile) -> Result<(OsString, File), WorkflowError> {
+        for _ in 0..TEMP_ATTEMPTS {
+            let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let name = OsString::from(format!(
+                ".ren-skill-install-{}-{sequence}",
+                std::process::id()
+            ));
+            let mut target = match openat(
+                &pending.parent,
+                &name,
+                CREATE_FLAGS,
+                Mode::from_raw_mode(0o644),
+            ) {
+                Ok(fd) => File::from(fd),
+                Err(Errno::EXIST) => continue,
+                Err(error) => return Err(component_error(error, &pending.path)),
+            };
+            if let Err(error) = target.write_all(pending.contents.as_bytes()) {
+                let cleanup_error = unlinkat(&pending.parent, &name, AtFlags::empty())
+                    .err()
+                    .map(io::Error::from);
+                return Err(with_rollback_error(WorkflowError::Io(error), cleanup_error));
+            }
+            return Ok((name, target));
+        }
+        Err(WorkflowError::Io(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "could not allocate a private staging file beside {}",
+                pending.path.display()
+            ),
+        )))
+    }
+
+    fn write_contents(file: &mut PendingSkillFile) -> Result<(), WorkflowError> {
+        let target = file
+            .target
+            .as_mut()
+            .ok_or_else(|| WorkflowError::UnsafeSkillPath(file.path.clone()))?;
+        target.set_len(0)?;
+        target.seek(SeekFrom::Start(0))?;
+        target.write_all(file.contents.as_bytes())?;
+        Ok(())
+    }
+
+    fn verify_pending_path(file: &PendingSkillFile) -> Result<(), WorkflowError> {
+        verify_root(&file.root)?;
+        let current_parent =
+            open_existing_directories(&file.root.dir, &file.root.path, &file.parent_relative)?;
+        if identity(&current_parent.metadata()?) != identity(&file.parent.metadata()?) {
+            return Err(WorkflowError::UnsafeSkillPath(file.path.clone()));
+        }
+        if let Some(target) = &file.target {
+            let current =
+                open_existing_target(&current_parent, &file.name, &file.path, READ_FLAGS)?;
+            if identity(&current.metadata()?) != identity(&target.metadata()?) {
+                return Err(WorkflowError::UnsafeSkillPath(file.path.clone()));
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_root(root: &RootHandle) -> Result<(), WorkflowError> {
+        let current = open_absolute_directory(&root.path)?;
+        if identity(&current.metadata()?) != root.identity {
+            return Err(WorkflowError::UnsafeSkillPath(root.path.clone()));
+        }
+        Ok(())
+    }
+
+    fn open_existing_directories(
+        root: &File,
+        root_path: &Path,
+        relative: &Path,
+    ) -> Result<File, WorkflowError> {
+        let mut current = root.try_clone()?;
+        let mut display = root_path.to_path_buf();
+        for component in relative.components() {
+            display.push(component.as_os_str());
+            current = openat(
+                &current,
+                component.as_os_str(),
+                DIRECTORY_FLAGS,
+                Mode::empty(),
+            )
+            .map(File::from)
+            .map_err(|error| component_error(error, &display))?;
+        }
+        Ok(current)
+    }
+
+    fn rollback_after(
+        install_error: WorkflowError,
+        pending: &mut [PendingSkillFile],
+        completed: &[usize],
+        created_dirs: &[CreatedDirectory],
+    ) -> WorkflowError {
+        let mut rollback_error = None;
+        for index in completed.iter().rev().copied() {
+            let file = &mut pending[index];
+            let result = match &file.previous {
+                Some(previous) => restore_existing(file.target.as_mut(), previous),
+                None => remove_created_file(file),
+            };
+            if let Err(error) = result
+                && rollback_error.is_none()
+            {
+                rollback_error = Some(error);
+            }
+        }
+        if let Some(error) = cleanup_directories(created_dirs)
             && rollback_error.is_none()
         {
             rollback_error = Some(error);
         }
+        with_rollback_error(install_error, rollback_error)
     }
 
-    match rollback_error {
-        None => WorkflowError::Io(install_error),
-        Some(rollback_error) => WorkflowError::Io(io::Error::new(
-            install_error.kind(),
-            format!(
+    fn restore_existing(
+        target: Option<&mut File>,
+        previous: &[u8],
+    ) -> io::Result<()> {
+        let target = target.ok_or_else(|| io::Error::other("missing rollback file handle"))?;
+        target.set_len(0)?;
+        target.seek(SeekFrom::Start(0))?;
+        target.write_all(previous)
+    }
+
+    fn remove_created_file(file: &PendingSkillFile) -> io::Result<()> {
+        let Some(target) = &file.target else {
+            return Ok(());
+        };
+        let current = match openat(&file.parent, &file.name, READ_FLAGS, Mode::empty()) {
+            Ok(fd) => File::from(fd),
+            Err(Errno::NOENT) => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        if identity(&current.metadata()?) != identity(&target.metadata()?) {
+            return Err(io::Error::other(format!(
+                "refusing to remove a replaced skill target at {}",
+                file.path.display()
+            )));
+        }
+        unlinkat(&file.parent, &file.name, AtFlags::empty()).map_err(Into::into)
+    }
+
+    fn cleanup_directories(created_dirs: &[CreatedDirectory]) -> Option<io::Error> {
+        let mut first_error = None;
+        for directory in created_dirs.iter().rev() {
+            let current = match openat(
+                &directory.parent,
+                &directory.name,
+                DIRECTORY_FLAGS,
+                Mode::empty(),
+            ) {
+                Ok(fd) => File::from(fd),
+                Err(Errno::NOENT) => continue,
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error.into());
+                    }
+                    continue;
+                },
+            };
+            let metadata = match current.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                    continue;
+                },
+            };
+            if identity(&metadata) != directory.identity {
+                if first_error.is_none() {
+                    first_error = Some(io::Error::other(format!(
+                        "refusing to remove a replaced skill directory at {}",
+                        directory.path.display()
+                    )));
+                }
+                continue;
+            }
+            if let Err(error) = unlinkat(&directory.parent, &directory.name, AtFlags::REMOVEDIR)
+                && error != Errno::NOTEMPTY
+                && first_error.is_none()
+            {
+                first_error = Some(error.into());
+            }
+        }
+        first_error
+    }
+
+    fn component_error(
+        error: Errno,
+        path: &Path,
+    ) -> WorkflowError {
+        if matches!(error, Errno::LOOP | Errno::NOTDIR) {
+            WorkflowError::UnsafeSkillPath(path.to_path_buf())
+        } else {
+            WorkflowError::Io(error.into())
+        }
+    }
+
+    fn identity(metadata: &Metadata) -> Identity {
+        Identity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }
+    }
+
+    fn with_rollback_error(
+        install_error: WorkflowError,
+        rollback_error: Option<io::Error>,
+    ) -> WorkflowError {
+        match rollback_error {
+            None => install_error,
+            Some(rollback_error) => WorkflowError::Io(io::Error::other(format!(
                 "skill installation failed: {install_error}; rollback also failed: \
-                     {rollback_error}"
-            ),
-        )),
+                 {rollback_error}"
+            ))),
+        }
+    }
+}
+
+#[cfg(not(unix))]
+mod platform {
+    use super::{SkillDefinition, WorkflowError};
+
+    pub(super) fn install(
+        definitions: &[SkillDefinition],
+        _force: bool,
+        _before_apply: impl FnOnce(),
+    ) -> Result<(), WorkflowError> {
+        let rejected = definitions
+            .iter()
+            .flat_map(|definition| definition.files.iter())
+            .map(|(path, _)| path.clone())
+            .next()
+            .or_else(|| {
+                definitions
+                    .first()
+                    .map(|definition| definition.base_dir.clone())
+            })
+            .unwrap_or_default();
+        Err(WorkflowError::UnsafeSkillPath(rejected))
     }
 }

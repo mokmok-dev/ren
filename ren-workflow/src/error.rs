@@ -89,6 +89,13 @@ pub enum WorkflowError {
     /// A skill file already exists and overwrite was not requested.
     #[error("skill file already exists at {}; use --force to replace it", .0.display())]
     SkillExists(std::path::PathBuf),
+    /// A skill target cannot be installed without leaving its filesystem authority.
+    #[error(
+        "unsafe skill installation path at {}; the path escapes its installation base, traverses \
+         a symbolic link, has an unexpected component type, or cannot be replaced safely",
+        .0.display()
+    )]
+    UnsafeSkillPath(std::path::PathBuf),
     /// Reading or writing workflow state failed.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
