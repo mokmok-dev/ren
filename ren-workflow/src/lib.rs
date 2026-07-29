@@ -20,13 +20,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub use bridge::Agent;
 pub use engine::{CompiledWorkflow, Engine, PauseInfo, RunOptions, RunResult};
 pub use error::{HostError, WorkflowError};
 pub use guide::{AUTHORING_MD, PROTOCOL_MD};
 pub use host::{AgentOptions, AgentRequest, AgentResult, Capability, EchoHost, Host};
 pub use init::{
-    InitScope, SKILL_FILES, SKILL_MD, SkillDefinition, SkillFile, install_skill, skill_definition,
-    supported_agents,
+    EmbeddedSkill, InitScope, SKILL_FILES, SKILL_MD, SkillDefinition, SkillFile, WORKFLOW_SKILL,
+    install_skill, install_skills, skill_definition, skill_definition_for, supported_agents,
 };
 pub use journal::{Journal, JournalEntry, ParallelSlot};
 pub use meta::{MetaPhase, WorkflowMeta};
@@ -88,7 +89,7 @@ pub struct ProtocolArgs {
 /// Arguments accepted by `workflow init` (and the top-level `ren init`).
 #[derive(Args, Debug)]
 pub struct InitArgs {
-    /// Installs the skill for a single agent instead of every supported one.
+    /// Restricts installation to a single agent instead of every supported one.
     #[arg(long, value_enum, value_name = "AGENT")]
     agent: Option<bridge::Agent>,
     /// Installs into the home directory (the default).
@@ -265,9 +266,25 @@ pub fn run_protocol(args: &ProtocolArgs) -> Result<(), WorkflowError> {
 /// # Errors
 ///
 /// Returns [`WorkflowError::HomeUnavailable`] when user scope is requested but
-/// `$HOME` is unset, [`WorkflowError::SkillExists`] when a file already exists
-/// without `--force`, or [`WorkflowError::Io`] on other filesystem failures.
+/// `$HOME` is unset, [`WorkflowError::SkillExists`] when a file has different
+/// contents without `--force`, or [`WorkflowError::Io`] on other filesystem
+/// failures.
 pub fn run_init(args: &InitArgs) -> Result<(), WorkflowError> {
+    run_init_with_skills(args, &[])
+}
+
+/// Installs `ren-workflow` plus additional embedded skills into coding agents.
+///
+/// This supports the top-level `ren init`, while `workflow init` remains
+/// focused on the workflow skill.
+///
+/// # Errors
+///
+/// Returns the same target-resolution and installation errors as [`run_init`].
+pub fn run_init_with_skills(
+    args: &InitArgs,
+    additional_skills: &[EmbeddedSkill],
+) -> Result<(), WorkflowError> {
     let scope = if args.project {
         InitScope::Project
     } else {
@@ -277,11 +294,25 @@ pub fn run_init(args: &InitArgs) -> Result<(), WorkflowError> {
     let agents = args
         .agent
         .map_or_else(|| supported_agents().to_vec(), |agent| vec![agent]);
+    let mut definitions = Vec::new();
     for agent in agents {
-        let definition = skill_definition(&base, agent);
-        install_skill(&definition, args.force)?;
+        for skill in std::iter::once(WORKFLOW_SKILL).chain(additional_skills.iter().copied()) {
+            definitions.push((skill, skill_definition_for(&base, agent, skill)));
+        }
+    }
+
+    install_skills(
+        &definitions
+            .iter()
+            .map(|(_, definition)| definition.clone())
+            .collect::<Vec<_>>(),
+        args.force,
+    )?;
+
+    for (skill, definition) in definitions {
         println!(
-            "installed ren-workflow skill at {}",
+            "installed {} skill at {}",
+            skill.name,
             definition.dir.display()
         );
     }

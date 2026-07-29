@@ -1272,3 +1272,55 @@ fn registration_checks_conflicts_before_creating_layout() -> crate::error::Resul
     assert!(!vault.index_dir().starts_with(&vault.root));
     Ok(())
 }
+
+#[test]
+fn embedded_memory_skill_has_matching_content_and_installs_all_files()
+-> Result<(), ren_workflow::WorkflowError> {
+    let frontmatter = crate::MEMORY_SKILL_MD
+        .strip_prefix("---\n")
+        .and_then(|skill| skill.split_once("\n---\n"))
+        .map(|(frontmatter, _)| frontmatter)
+        .ok_or_else(|| {
+            ren_workflow::WorkflowError::InvalidConfig(
+                "memory skill frontmatter is not closed".into(),
+            )
+        })?;
+    let keys = frontmatter
+        .lines()
+        .filter(|line| !line.chars().next().is_some_and(char::is_whitespace))
+        .filter_map(|line| line.split_once(':').map(|(key, _)| key))
+        .collect::<Vec<_>>();
+    assert_eq!(keys, ["name", "description"]);
+    assert!(frontmatter.contains("name: ren-memory"));
+    assert!(frontmatter.contains("remember this"));
+    assert!(crate::MEMORY_SKILL_MD.contains("ren memory --help"));
+    assert!(crate::MEMORY_SKILL_MD.contains("ren memory <subcommand> --help"));
+    assert!(crate::MEMORY_SKILL_MD.contains("ren memory init --user"));
+    assert!(crate::MEMORY_SKILL_MD.contains("ren init"));
+    assert!(crate::MEMORY_OPENAI_YAML.contains("display_name: \"ren Memory\""));
+    assert!(
+        crate::MEMORY_OPENAI_YAML
+            .contains("short_description: \"Capture, search, and curate local agent memory\"")
+    );
+    assert!(crate::MEMORY_OPENAI_YAML.contains(
+        "default_prompt: \"Use $ren-memory to capture and retrieve project knowledge.\""
+    ));
+
+    let base = tempfile::tempdir()?;
+    for agent in ren_workflow::supported_agents() {
+        let definition =
+            ren_workflow::skill_definition_for(base.path(), agent, crate::MEMORY_SKILL);
+        assert!(definition.dir.ends_with("skills/ren-memory"));
+        assert_eq!(definition.files.len(), crate::MEMORY_SKILL_FILES.len());
+        ren_workflow::install_skill(&definition, false)?;
+        assert_eq!(
+            fs::read_to_string(definition.dir.join("SKILL.md"))?,
+            crate::MEMORY_SKILL_MD
+        );
+        assert_eq!(
+            fs::read_to_string(definition.dir.join("agents/openai.yaml"))?,
+            crate::MEMORY_OPENAI_YAML
+        );
+    }
+    Ok(())
+}

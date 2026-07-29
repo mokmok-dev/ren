@@ -17,7 +17,7 @@ enum Command {
     Workflow(ren_workflow::Config),
     /// Captures, indexes, and queries local Markdown knowledge.
     Memory(ren_memory::Config),
-    /// Installs the embedded skill into coding agents (runs every group's init).
+    /// Installs every embedded skill into coding agents.
     Init(ren_workflow::InitArgs),
 }
 
@@ -29,10 +29,11 @@ fn main() -> ExitCode {
             ren_workflow::run(config).map_err(|error| CommandFailure::Workflow(error.to_string()))
         },
         Command::Memory(config) => ren_memory::run(config).map_err(CommandFailure::Memory),
-        // The top-level `init` recursively runs the init of every command
-        // group; only the workflow group defines one today.
-        Command::Init(args) => ren_workflow::run_init(&args)
-            .map_err(|error| CommandFailure::Workflow(error.to_string())),
+        // The top-level `init` recursively installs every embedded skill.
+        Command::Init(args) => {
+            ren_workflow::run_init_with_skills(&args, &[ren_memory::MEMORY_SKILL])
+                .map_err(|error| CommandFailure::Workflow(error.to_string()))
+        },
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

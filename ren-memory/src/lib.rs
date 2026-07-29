@@ -5,6 +5,7 @@ mod hook;
 mod index;
 mod model;
 mod mutation;
+mod skill;
 mod vault;
 
 use std::{
@@ -26,6 +27,7 @@ pub use model::{
     NoteType, Relation, SCHEMA, Source,
 };
 pub use mutation::{MutationResult, PromotionProposal, PromotionResult};
+pub use skill::{MEMORY_OPENAI_YAML, MEMORY_SKILL, MEMORY_SKILL_FILES, MEMORY_SKILL_MD};
 pub use vault::{MemoryHome, Registry, Vault, VaultEntry};
 
 use crate::error::Result;
