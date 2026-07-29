@@ -1,5 +1,6 @@
 use std::{fs, process::Command};
 
+#[cfg(unix)]
 #[test]
 fn top_level_init_installs_both_skills_for_all_agents_and_scopes()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -34,6 +35,10 @@ fn top_level_init_installs_both_skills_for_all_agents_and_scopes()
                 ren_workflow::SKILL_MD
             );
             assert_eq!(
+                fs::read_to_string(skill_root.join("ren-workflow/agents/openai.yaml"))?,
+                ren_workflow::OPENAI_YAML
+            );
+            assert_eq!(
                 fs::read_to_string(skill_root.join("ren-memory/SKILL.md"))?,
                 ren_memory::MEMORY_SKILL_MD
             );
@@ -47,6 +52,7 @@ fn top_level_init_installs_both_skills_for_all_agents_and_scopes()
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn top_level_init_adds_memory_to_an_existing_workflow_install()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -63,6 +69,7 @@ fn top_level_init_adds_memory_to_an_existing_workflow_install()
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(skill_root.join("ren-workflow/SKILL.md").is_file());
+    assert!(skill_root.join("ren-workflow/agents/openai.yaml").is_file());
     assert!(!skill_root.join("ren-memory").exists());
 
     let output = Command::new(env!("CARGO_BIN_EXE_ren"))
@@ -85,6 +92,7 @@ fn top_level_init_adds_memory_to_an_existing_workflow_install()
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn top_level_init_preflights_all_skills_before_writing() -> Result<(), Box<dyn std::error::Error>> {
     let project = tempfile::tempdir()?;
@@ -108,6 +116,7 @@ fn top_level_init_preflights_all_skills_before_writing() -> Result<(), Box<dyn s
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(!skill_root.join("ren-workflow/SKILL.md").exists());
+    assert!(!skill_root.join("ren-workflow/agents/openai.yaml").exists());
     assert!(!skill_root.join("ren-memory/SKILL.md").exists());
     assert_eq!(fs::read_to_string(metadata)?, "user-owned metadata");
     Ok(())

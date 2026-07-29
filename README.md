@@ -5,8 +5,8 @@
 > 記憶に根を張り、開発を連ね、智を錬る。
 
 `ren` is a foundation for continuous development with coding agents. It
-currently provides deterministic Rhai workflows and is intended to grow to
-support memory and other parts of the development flow.
+currently provides deterministic Rhai workflows and durable local memory, and
+is intended to grow across other parts of the development flow.
 
 ## The five petals
 
@@ -36,7 +36,7 @@ The name `ren` carries three connected ideas:
 - **錬 (refinement)** — returning workflow experience to memory so that
   knowledge can be refined over time.
 
-## Workflow
+## ren-workflow
 
 Discover the available workflows and their arguments before running one:
 
@@ -48,3 +48,18 @@ ren workflow run <name-or-path> --args '<json>'
 ```
 
 Run `ren workflow --help` for the complete command reference.
+
+## ren-memory
+
+Capture and retrieve durable project knowledge through the local ren-memory
+vault:
+
+```console
+ren memory --help
+ren memory search <query>
+ren memory list
+ren memory show <note-id>
+```
+
+The hyphenated `ren-memory` name refers to the skill and component; `ren memory`
+is its CLI command group.

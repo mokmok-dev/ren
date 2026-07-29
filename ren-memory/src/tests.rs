@@ -20,6 +20,20 @@ use crate::{
     vault::Vault,
 };
 
+#[derive(Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenAiMetadata {
+    interface: OpenAiInterface,
+}
+
+#[derive(Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenAiInterface {
+    display_name: String,
+    short_description: String,
+    default_prompt: String,
+}
+
 fn fixture() -> crate::error::Result<(TempDir, MemoryHome, Vault)> {
     let temporary = tempfile::tempdir().map_err(|error| crate::MemoryError::io(".", error))?;
     let project = temporary.path().join("project");
@@ -291,6 +305,21 @@ fn codex_stop_payload_is_normalized_without_transcript_capture() -> crate::error
     assert!(!second.captured);
     assert_eq!(first.note_id, second.note_id);
     Ok(())
+}
+
+#[test]
+fn non_codex_adapter_validation_uses_component_name() {
+    let error = parse_event(br#"{"content":"not normalized"}"#, "manual", "capture")
+        .expect_err("non-Codex adapter input without a schema must be rejected");
+    assert!(matches!(
+        &error,
+        crate::MemoryError::Validation(message)
+            if message == "adapter payload is not a normalized ren-memory event"
+    ));
+    assert_eq!(
+        error.to_string(),
+        "validation failed: adapter payload is not a normalized ren-memory event"
+    );
 }
 
 #[test]
@@ -1297,30 +1326,61 @@ fn embedded_memory_skill_has_matching_content_and_installs_all_files()
     assert!(crate::MEMORY_SKILL_MD.contains("ren memory <subcommand> --help"));
     assert!(crate::MEMORY_SKILL_MD.contains("ren memory init --user"));
     assert!(crate::MEMORY_SKILL_MD.contains("ren init"));
-    assert!(crate::MEMORY_OPENAI_YAML.contains("display_name: \"ren Memory\""));
+    assert!(crate::MEMORY_SKILL_MD.contains("# ren-memory"));
     assert!(
-        crate::MEMORY_OPENAI_YAML
-            .contains("short_description: \"Capture, search, and curate local agent memory\"")
+        crate::MEMORY_SKILL_MD.contains("local ren-memory vault"),
+        "component prose must use the hyphenated skill name"
     );
-    assert!(crate::MEMORY_OPENAI_YAML.contains(
-        "default_prompt: \"Use $ren-memory to capture and retrieve project knowledge.\""
-    ));
+    assert_eq!(
+        yaml_serde::from_str::<OpenAiMetadata>(crate::MEMORY_OPENAI_YAML)
+            .map_err(|error| { ren_workflow::WorkflowError::InvalidConfig(error.to_string()) })?,
+        OpenAiMetadata {
+            interface: OpenAiInterface {
+                display_name: "ren-memory".into(),
+                short_description: "Capture, search, and curate local agent memory".into(),
+                default_prompt: "Use $ren-memory to capture and retrieve project knowledge.".into(),
+            },
+        }
+    );
+    let user_facing_assets = [
+        ("README.md", include_str!("../../README.md")),
+        ("ren-memory/SKILL.md", crate::MEMORY_SKILL_MD),
+        ("ren-memory/agents/openai.yaml", crate::MEMORY_OPENAI_YAML),
+    ];
+    for legacy in [
+        "ren Memory",
+        "ren Workflow",
+        "# ren memory",
+        "# ren workflow",
+    ] {
+        for (name, contents) in user_facing_assets {
+            assert!(
+                !contents.contains(legacy),
+                "legacy component display form `{legacy}` remains in {name}"
+            );
+        }
+    }
+    assert!(include_str!("../../README.md").contains("## ren-memory"));
+    assert!(include_str!("../../README.md").contains("`ren memory`"));
 
-    let base = tempfile::tempdir()?;
-    for agent in ren_workflow::supported_agents() {
-        let definition =
-            ren_workflow::skill_definition_for(base.path(), agent, crate::MEMORY_SKILL);
-        assert!(definition.dir.ends_with("skills/ren-memory"));
-        assert_eq!(definition.files.len(), crate::MEMORY_SKILL_FILES.len());
-        ren_workflow::install_skill(&definition, false)?;
-        assert_eq!(
-            fs::read_to_string(definition.dir.join("SKILL.md"))?,
-            crate::MEMORY_SKILL_MD
-        );
-        assert_eq!(
-            fs::read_to_string(definition.dir.join("agents/openai.yaml"))?,
-            crate::MEMORY_OPENAI_YAML
-        );
+    #[cfg(unix)]
+    {
+        let base = tempfile::tempdir()?;
+        for agent in ren_workflow::supported_agents() {
+            let definition =
+                ren_workflow::skill_definition_for(base.path(), agent, crate::MEMORY_SKILL);
+            assert!(definition.dir.ends_with("skills/ren-memory"));
+            assert_eq!(definition.files.len(), crate::MEMORY_SKILL_FILES.len());
+            ren_workflow::install_skill(&definition, false)?;
+            assert_eq!(
+                fs::read_to_string(definition.dir.join("SKILL.md"))?,
+                crate::MEMORY_SKILL_MD
+            );
+            assert_eq!(
+                fs::read_to_string(definition.dir.join("agents/openai.yaml"))?,
+                crate::MEMORY_OPENAI_YAML
+            );
+        }
     }
     Ok(())
 }

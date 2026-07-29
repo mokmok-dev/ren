@@ -2,7 +2,7 @@
 name: ren-memory
 description: >
   Capture, retrieve, inspect, connect, curate, and diagnose project knowledge
-  with the local ren memory vault. Use when the user asks to remember or capture
+  with the local ren-memory vault. Use when the user asks to remember or capture
   information; search, list, show, relate, or export notes; sync or rebuild the
   memory index; promote, link, revise, or archive knowledge; initialize a vault;
   manage memory hooks; diagnose memory health; or run `ren memory`. Trigger
@@ -10,7 +10,7 @@ description: >
   memory", "memory vault", "promote notes", and "memory hook".
 ---
 
-# ren memory
+# ren-memory
 
 Use `ren memory` to manage durable Markdown knowledge and its disposable search
 index. Treat the installed binary as the version-matched source of truth.

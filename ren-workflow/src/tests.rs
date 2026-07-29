@@ -22,6 +22,20 @@ const META: &str = r#"let meta = #{
 };
 "#;
 
+#[derive(Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenAiMetadata {
+    interface: OpenAiInterface,
+}
+
+#[derive(Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenAiInterface {
+    display_name: String,
+    short_description: String,
+    default_prompt: String,
+}
+
 #[derive(Clone)]
 struct CountingHost {
     calls: Rc<Cell<usize>>,
@@ -1185,6 +1199,7 @@ fn bridge_paths_and_contents_cover_every_agent_and_scope() -> Result<(), Workflo
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn init_installs_skill_for_every_agent_and_scope() -> Result<(), WorkflowError> {
     let base = TempDir::new("skills")?;
@@ -1201,14 +1216,17 @@ fn init_installs_skill_for_every_agent_and_scope() -> Result<(), WorkflowError> 
 
         crate::init::install_skill(&definition, false)?;
         let skill_md = definition.dir.join("SKILL.md");
+        let metadata = definition.dir.join("agents/openai.yaml");
         assert_eq!(fs::read_to_string(&skill_md)?, crate::init::SKILL_MD);
-        // The thin bootstrap ships only SKILL.md; rich guidance lives in the
-        // binary and is fetched via `workflow protocol`, not installed here.
+        assert_eq!(fs::read_to_string(&metadata)?, crate::init::OPENAI_YAML);
+        // The thin bootstrap keeps rich guidance in the binary, where it is
+        // fetched via `workflow protocol`, rather than installing references.
         assert!(!definition.dir.join("references").exists());
 
         // A byte-identical install is idempotent without --force.
         crate::init::install_skill(&definition, false)?;
         assert_eq!(fs::read_to_string(&skill_md)?, crate::init::SKILL_MD);
+        assert_eq!(fs::read_to_string(&metadata)?, crate::init::OPENAI_YAML);
         fs::write(&skill_md, "user-owned contents")?;
         assert!(matches!(
             crate::init::install_skill(&definition, false),
@@ -1222,6 +1240,7 @@ fn init_installs_skill_for_every_agent_and_scope() -> Result<(), WorkflowError> 
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn init_preflights_every_file_before_writing() -> Result<(), WorkflowError> {
     const FILES: &[crate::init::SkillFile] = &[
@@ -1260,29 +1279,301 @@ fn init_preflights_every_file_before_writing() -> Result<(), WorkflowError> {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn init_rolls_back_files_after_an_apply_failure() -> Result<(), WorkflowError> {
     let base = TempDir::new("skill-rollback")?;
     let output_dir = base.path().join("output");
     let first_file = output_dir.join("first");
+    let second_file = output_dir.join("second");
     let definition = crate::init::SkillDefinition {
-        dir: output_dir.clone(),
-        // Both paths are absent during preflight. Writing the first target
-        // creates `output/` as a directory, making the second target fail.
+        base_dir: base.path().to_path_buf(),
+        dir: output_dir,
         files: vec![
             (first_file.clone(), "first contents"),
-            (output_dir, "cannot replace a directory"),
+            (second_file.clone(), "second contents"),
         ],
     };
 
-    assert!(matches!(
-        crate::init::install_skill(&definition, false),
-        Err(WorkflowError::Io(_))
-    ));
+    #[cfg(unix)]
+    let result = crate::init::install_skills_with_pre_apply_hook(
+        std::slice::from_ref(&definition),
+        false,
+        || fs::write(&second_file, "competing contents").expect("test conflict must be created"),
+    );
+    #[cfg(not(unix))]
+    let result = {
+        fs::create_dir_all(&second_file)?;
+        crate::init::install_skill(&definition, false)
+    };
+    assert!(matches!(result, Err(WorkflowError::Io(_))));
     assert!(
         !first_file.exists(),
         "the earlier file must be removed when the batch fails"
     );
+    assert_eq!(
+        fs::read_to_string(&second_file)?,
+        "competing contents",
+        "rollback must preserve the file that won the target race"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn init_force_rollback_restores_pre_existing_contents() -> Result<(), WorkflowError> {
+    let base = TempDir::new("skill-force-rollback")?;
+    let output_dir = base.path().join("output");
+    fs::create_dir_all(&output_dir)?;
+    let first_file = output_dir.join("first");
+    let second_file = output_dir.join("second");
+    fs::write(&first_file, "original contents")?;
+    let definition = crate::init::SkillDefinition {
+        base_dir: base.path().to_path_buf(),
+        dir: output_dir,
+        files: vec![
+            (first_file.clone(), "replacement contents"),
+            (second_file.clone(), "second contents"),
+        ],
+    };
+
+    let result = crate::init::install_skills_with_pre_apply_hook(
+        std::slice::from_ref(&definition),
+        true,
+        || fs::write(&second_file, "competing contents").expect("test conflict must be created"),
+    );
+    assert!(matches!(result, Err(WorkflowError::Io(_))));
+    assert_eq!(fs::read_to_string(first_file)?, "original contents");
+    assert_eq!(fs::read_to_string(second_file)?, "competing contents");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn init_rejects_symlinked_nested_directory_without_writing_outside() -> Result<(), WorkflowError> {
+    use std::os::unix::fs::symlink;
+
+    let base = TempDir::new("skill-symlinked-agents")?;
+    let outside = TempDir::new("skill-symlinked-agents-outside")?;
+    let definition = crate::init::skill_definition(base.path(), crate::bridge::Agent::Codex);
+    fs::create_dir_all(&definition.dir)?;
+    // If traversal followed the link and read this matching metadata, the
+    // installation could incorrectly appear idempotent.
+    fs::write(outside.path().join("openai.yaml"), crate::init::OPENAI_YAML)?;
+    symlink(outside.path(), definition.dir.join("agents"))?;
+
+    let error = crate::init::install_skill(&definition, false);
+    assert!(
+        matches!(
+            &error,
+            Err(WorkflowError::UnsafeSkillPath(path))
+                if path.ends_with(".codex/skills/ren-workflow/agents")
+                    || path.ends_with(".codex/skills/ren-workflow/agents/openai.yaml")
+        ),
+        "unexpected install result: {error:?}"
+    );
+    assert!(!definition.dir.join("SKILL.md").exists());
+    assert_eq!(
+        fs::read_to_string(outside.path().join("openai.yaml"))?,
+        crate::init::OPENAI_YAML
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn init_force_rejects_symlink_target_without_overwriting_outside() -> Result<(), WorkflowError> {
+    use std::os::unix::fs::symlink;
+
+    let base = TempDir::new("skill-force-symlink")?;
+    let outside = TempDir::new("skill-force-symlink-outside")?;
+    let definition = crate::init::skill_definition(base.path(), crate::bridge::Agent::Codex);
+    let agents = definition.dir.join("agents");
+    fs::create_dir_all(&agents)?;
+    let outside_file = outside.path().join("outside.yaml");
+    fs::write(&outside_file, "outside contents")?;
+    symlink(&outside_file, agents.join("openai.yaml"))?;
+
+    assert!(matches!(
+        crate::init::install_skill(&definition, true),
+        Err(WorkflowError::UnsafeSkillPath(path))
+            if path == agents.join("openai.yaml")
+    ));
+    assert_eq!(fs::read_to_string(outside_file)?, "outside contents");
+    assert!(!definition.dir.join("SKILL.md").exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn init_force_rejects_agents_symlink_swap_after_preflight() -> Result<(), WorkflowError> {
+    use std::os::unix::fs::symlink;
+
+    let base = TempDir::new("skill-force-swap")?;
+    let outside = TempDir::new("skill-force-swap-outside")?;
+    let definition = crate::init::skill_definition(base.path(), crate::bridge::Agent::Codex);
+    crate::init::install_skill(&definition, false)?;
+    let agents = definition.dir.join("agents");
+    let original_agents = definition.dir.join("agents-original");
+    let metadata = agents.join("openai.yaml");
+    fs::write(&metadata, "project contents")?;
+    let outside_metadata = outside.path().join("openai.yaml");
+    fs::write(&outside_metadata, "outside contents")?;
+
+    let error = crate::init::install_skills_with_pre_apply_hook(
+        std::slice::from_ref(&definition),
+        true,
+        || {
+            fs::rename(&agents, &original_agents)
+                .expect("the test must move the preflighted directory");
+            symlink(outside.path(), &agents).expect("the test must install the competing symlink");
+        },
+    );
+    assert!(
+        matches!(
+            &error,
+            Err(WorkflowError::UnsafeSkillPath(path))
+                if path.ends_with(".codex/skills/ren-workflow/agents/openai.yaml")
+                    || path.ends_with(".codex/skills/ren-workflow/agents")
+        ),
+        "unexpected install result: {error:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(original_agents.join("openai.yaml"))?,
+        "project contents"
+    );
+    assert_eq!(fs::read_to_string(outside_metadata)?, "outside contents");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn init_force_rejects_final_target_symlink_swap_after_preflight() -> Result<(), WorkflowError> {
+    use std::os::unix::fs::symlink;
+
+    let base = TempDir::new("skill-force-target-swap")?;
+    let outside = TempDir::new("skill-force-target-swap-outside")?;
+    let definition = crate::init::skill_definition(base.path(), crate::bridge::Agent::Codex);
+    crate::init::install_skill(&definition, false)?;
+    let metadata = definition.dir.join("agents/openai.yaml");
+    let original_metadata = definition.dir.join("agents/openai-original.yaml");
+    fs::write(&metadata, "project contents")?;
+    let outside_metadata = outside.path().join("openai.yaml");
+    fs::write(&outside_metadata, "outside contents")?;
+
+    let error = crate::init::install_skills_with_pre_apply_hook(
+        std::slice::from_ref(&definition),
+        true,
+        || {
+            fs::rename(&metadata, &original_metadata).expect("the original target must move");
+            symlink(&outside_metadata, &metadata).expect("the target symlink must be installed");
+        },
+    );
+    assert!(matches!(
+        error,
+        Err(WorkflowError::UnsafeSkillPath(path)) if path == metadata
+    ));
+    assert_eq!(fs::read_to_string(original_metadata)?, "project contents");
+    assert_eq!(fs::read_to_string(outside_metadata)?, "outside contents");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn init_rejects_base_ancestor_swap_after_preflight() -> Result<(), WorkflowError> {
+    use std::os::unix::fs::symlink;
+
+    let container = TempDir::new("skill-base-ancestor-swap")?;
+    let authority = container.path().join("authority");
+    let original_authority = container.path().join("authority-original");
+    let base = authority.join("project");
+    fs::create_dir_all(&base)?;
+    let outside = TempDir::new("skill-base-ancestor-swap-outside")?;
+    let outside_project = outside.path().join("project");
+    fs::create_dir_all(outside_project.join(".codex/skills/ren-workflow/agents"))?;
+    let outside_metadata = outside_project.join(".codex/skills/ren-workflow/agents/openai.yaml");
+    fs::write(&outside_metadata, "outside contents")?;
+    let definition = crate::init::skill_definition(&base, crate::bridge::Agent::Codex);
+
+    let error = crate::init::install_skills_with_pre_apply_hook(
+        std::slice::from_ref(&definition),
+        false,
+        || {
+            fs::rename(&authority, &original_authority).expect("the authority ancestor must move");
+            symlink(outside.path(), &authority).expect("the competing authority must be installed");
+        },
+    );
+    assert!(matches!(error, Err(WorkflowError::UnsafeSkillPath(_))));
+    assert_eq!(fs::read_to_string(outside_metadata)?, "outside contents");
+    assert!(
+        !original_authority
+            .join("project/.codex/skills/ren-workflow/SKILL.md")
+            .exists()
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn init_force_rejects_multiply_linked_target_before_reading_or_writing() -> Result<(), WorkflowError>
+{
+    use std::fs::hard_link;
+
+    let base = TempDir::new("skill-force-hardlink")?;
+    let outside = TempDir::new("skill-force-hardlink-outside")?;
+    let definition = crate::init::skill_definition(base.path(), crate::bridge::Agent::Codex);
+    let metadata = definition.dir.join("agents/openai.yaml");
+    fs::create_dir_all(
+        metadata
+            .parent()
+            .ok_or_else(|| WorkflowError::InvalidConfig("metadata must have a parent".into()))?,
+    )?;
+    let outside_metadata = outside.path().join("openai.yaml");
+    fs::write(&outside_metadata, "outside contents")?;
+    hard_link(&outside_metadata, &metadata)?;
+
+    assert!(matches!(
+        crate::init::install_skill(&definition, true),
+        Err(WorkflowError::UnsafeSkillPath(path)) if path == metadata
+    ));
+    assert_eq!(fs::read_to_string(outside_metadata)?, "outside contents");
+    assert!(!definition.dir.join("SKILL.md").exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn init_rejects_oversized_sparse_target_without_unbounded_read() -> Result<(), WorkflowError> {
+    let base = TempDir::new("skill-sparse-target")?;
+    let definition = crate::init::skill_definition(base.path(), crate::bridge::Agent::Codex);
+    let metadata = definition.dir.join("agents/openai.yaml");
+    fs::create_dir_all(
+        metadata
+            .parent()
+            .ok_or_else(|| WorkflowError::InvalidConfig("metadata must have a parent".into()))?,
+    )?;
+    let file = fs::File::create(&metadata)?;
+    file.set_len(1_u64 << 40)?;
+
+    assert!(matches!(
+        crate::init::install_skill(&definition, true),
+        Err(WorkflowError::UnsafeSkillPath(path)) if path == metadata
+    ));
+    assert_eq!(fs::metadata(metadata)?.len(), 1_u64 << 40);
+    assert!(!definition.dir.join("SKILL.md").exists());
+    Ok(())
+}
+
+#[cfg(not(unix))]
+#[test]
+fn init_fails_closed_without_handle_relative_no_reparse_support() -> Result<(), WorkflowError> {
+    let base = TempDir::new("skill-unsupported-platform")?;
+    let definition = crate::init::skill_definition(base.path(), crate::bridge::Agent::Codex);
+    assert!(matches!(
+        crate::init::install_skill(&definition, false),
+        Err(WorkflowError::UnsafeSkillPath(_))
+    ));
+    assert!(!definition.dir.exists());
     Ok(())
 }
 
@@ -1299,6 +1590,7 @@ fn supported_agents_are_unique_and_embedded_skill_is_valid() -> Result<(), Workf
         crate::init::SKILL_MD.starts_with("---\nname: ren-workflow\n"),
         "embedded SKILL.md must begin with Agent Skills frontmatter"
     );
+    assert!(crate::init::SKILL_MD.contains("# ren-workflow"));
     let frontmatter = crate::init::SKILL_MD
         .strip_prefix("---\n")
         .and_then(|skill| skill.split_once("\n---\n"))
@@ -1310,6 +1602,42 @@ fn supported_agents_are_unique_and_embedded_skill_is_valid() -> Result<(), Workf
         .filter_map(|line| line.split_once(':').map(|(key, _)| key))
         .collect::<Vec<_>>();
     assert_eq!(keys, ["name", "description"]);
+    assert_eq!(
+        yaml_serde::from_str::<OpenAiMetadata>(crate::init::OPENAI_YAML)
+            .map_err(|error| WorkflowError::InvalidConfig(error.to_string()))?,
+        OpenAiMetadata {
+            interface: OpenAiInterface {
+                display_name: "ren-workflow".into(),
+                short_description: "Discover, run, and author deterministic agent workflows".into(),
+                default_prompt: "Use $ren-workflow to discover and run a deterministic agent \
+                                 workflow."
+                    .into(),
+            },
+        }
+    );
+    let user_facing_assets = [
+        ("README.md", include_str!("../../README.md")),
+        ("skill/SKILL.md", crate::init::SKILL_MD),
+        ("skill/agents/openai.yaml", crate::init::OPENAI_YAML),
+        ("assets/protocol.md", crate::guide::PROTOCOL_MD),
+        ("assets/authoring.md", crate::guide::AUTHORING_MD),
+    ];
+    for legacy in [
+        "ren Workflow",
+        "ren Memory",
+        "# ren workflow",
+        "# ren memory",
+    ] {
+        for (name, contents) in user_facing_assets {
+            assert!(
+                !contents.contains(legacy),
+                "legacy component display form `{legacy}` remains in {name}"
+            );
+        }
+    }
+    assert!(include_str!("../../README.md").contains("## ren-workflow"));
+    assert!(include_str!("../../README.md").contains("## ren-memory"));
+    assert!(crate::init::SKILL_MD.contains("ren workflow --help"));
     // The thin bootstrap defers to the binary rather than duplicating guidance.
     assert!(crate::init::SKILL_MD.contains("agent_protocol"));
     assert!(!crate::guide::PROTOCOL_MD.is_empty());

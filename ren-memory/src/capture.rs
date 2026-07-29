@@ -70,7 +70,7 @@ pub fn parse_event(
         normalize_codex_event(&value, expected_event)?
     } else {
         return Err(MemoryError::Validation(
-            "adapter payload is not a normalized ren memory event".into(),
+            "adapter payload is not a normalized ren-memory event".into(),
         ));
     };
     if event.schema != EVENT_SCHEMA {
