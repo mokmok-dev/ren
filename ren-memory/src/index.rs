@@ -1226,7 +1226,7 @@ fn load_revision_snapshots(vault: &Vault) -> Result<Vec<RevisionSnapshot>> {
                 limit: crate::model::MAX_NOTE_BYTES,
             });
         }
-        if format!("{:x}", Sha256::digest(markdown.as_bytes())) != hash {
+        if sha256_hex(markdown.as_bytes()) != hash {
             return Err(MemoryError::InvalidNote {
                 path: path.to_owned(),
                 message: "revision content does not match its hash".into(),
@@ -1677,9 +1677,7 @@ fn append_operational_diagnostics(
                         .flatten()
                         .map(|path| vault.root.join(path));
                     path.and_then(|path| fs::read(path).ok())
-                        .is_none_or(|markdown| {
-                            format!("{:x}", Sha256::digest(markdown)) != expected
-                        })
+                        .is_none_or(|markdown| sha256_hex(&markdown) != expected)
                 })
             });
         if stale {
@@ -1805,6 +1803,18 @@ fn append_operational_diagnostics(
         Ok(_) => {},
     }
     Ok(())
+}
+
+fn sha256_hex(input: &[u8]) -> String {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+    let digest = Sha256::digest(input);
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        encoded.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

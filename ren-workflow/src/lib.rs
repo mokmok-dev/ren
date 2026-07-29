@@ -4,6 +4,7 @@ mod create;
 mod engine;
 mod error;
 mod guide;
+mod hash;
 mod host;
 mod init;
 mod journal;
