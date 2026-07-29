@@ -5,6 +5,7 @@
 let
   root = toString ../.;
   workspaceManifest = builtins.fromTOML (builtins.readFile ../Cargo.toml);
+  workspaceMembers = workspaceManifest.workspace.members;
   sourceFilter =
     path: type:
     let
@@ -15,13 +16,14 @@ let
         "Cargo.lock"
         "Cargo.toml"
       ];
-      isCrateFile = lib.hasPrefix "ren/" relative || lib.hasPrefix "ren-workflow/" relative;
+      isCrateFile = member: relative == member || lib.hasPrefix "${member}/" relative;
+      isWorkspaceCrateFile = builtins.any isCrateFile workspaceMembers;
       isBuildArtifact =
         relative == "target" || lib.hasPrefix "target/" relative || lib.hasInfix "/target/" relative;
     in
     lib.cleanSourceFilter path type
     && !isBuildArtifact
-    && (type == "directory" || isWorkspaceFile || isCrateFile);
+    && (type == "directory" || isWorkspaceFile || isWorkspaceCrateFile);
 in
 rustPlatform.buildRustPackage {
   pname = "ren";

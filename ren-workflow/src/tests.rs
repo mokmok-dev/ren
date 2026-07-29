@@ -1206,15 +1206,83 @@ fn init_installs_skill_for_every_agent_and_scope() -> Result<(), WorkflowError> 
         // binary and is fetched via `workflow protocol`, not installed here.
         assert!(!definition.dir.join("references").exists());
 
-        // A second install without --force is rejected on the first file.
+        // A byte-identical install is idempotent without --force.
+        crate::init::install_skill(&definition, false)?;
+        assert_eq!(fs::read_to_string(&skill_md)?, crate::init::SKILL_MD);
+        fs::write(&skill_md, "user-owned contents")?;
         assert!(matches!(
             crate::init::install_skill(&definition, false),
-            Err(WorkflowError::SkillExists(_))
+            Err(WorkflowError::SkillExists(path)) if path == skill_md
         ));
+        assert_eq!(fs::read_to_string(&skill_md)?, "user-owned contents");
         // With --force it overwrites cleanly.
         crate::init::install_skill(&definition, true)?;
         assert_eq!(fs::read_to_string(&skill_md)?, crate::init::SKILL_MD);
     }
+    Ok(())
+}
+
+#[test]
+fn init_preflights_every_file_before_writing() -> Result<(), WorkflowError> {
+    const FILES: &[crate::init::SkillFile] = &[
+        crate::init::SkillFile {
+            relative: "SKILL.md",
+            contents: "skill contents",
+        },
+        crate::init::SkillFile {
+            relative: "agents/openai.yaml",
+            contents: "generated metadata",
+        },
+    ];
+    let base = TempDir::new("skill-preflight")?;
+    let definition = crate::init::skill_definition_for(
+        base.path(),
+        crate::bridge::Agent::Codex,
+        crate::init::EmbeddedSkill {
+            name: "test-skill",
+            files: FILES,
+        },
+    );
+    let metadata = definition.dir.join("agents/openai.yaml");
+    fs::create_dir_all(
+        metadata.parent().ok_or_else(|| {
+            WorkflowError::InvalidConfig("metadata path must have a parent".into())
+        })?,
+    )?;
+    fs::write(&metadata, "user-owned metadata")?;
+
+    assert!(matches!(
+        crate::init::install_skill(&definition, false),
+        Err(WorkflowError::SkillExists(path)) if path == metadata
+    ));
+    assert!(!definition.dir.join("SKILL.md").exists());
+    assert_eq!(fs::read_to_string(metadata)?, "user-owned metadata");
+    Ok(())
+}
+
+#[test]
+fn init_rolls_back_files_after_an_apply_failure() -> Result<(), WorkflowError> {
+    let base = TempDir::new("skill-rollback")?;
+    let output_dir = base.path().join("output");
+    let first_file = output_dir.join("first");
+    let definition = crate::init::SkillDefinition {
+        dir: output_dir.clone(),
+        // Both paths are absent during preflight. Writing the first target
+        // creates `output/` as a directory, making the second target fail.
+        files: vec![
+            (first_file.clone(), "first contents"),
+            (output_dir, "cannot replace a directory"),
+        ],
+    };
+
+    assert!(matches!(
+        crate::init::install_skill(&definition, false),
+        Err(WorkflowError::Io(_))
+    ));
+    assert!(
+        !first_file.exists(),
+        "the earlier file must be removed when the batch fails"
+    );
     Ok(())
 }
 
