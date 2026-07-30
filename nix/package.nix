@@ -15,6 +15,7 @@ let
         ".rustfmt.toml"
         "Cargo.lock"
         "Cargo.toml"
+        "README.md"
       ];
       isCrateFile = member: relative == member || lib.hasPrefix "${member}/" relative;
       isWorkspaceCrateFile = builtins.any isCrateFile workspaceMembers;
