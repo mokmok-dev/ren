@@ -1366,7 +1366,15 @@ fn embedded_memory_skill_has_matching_content_and_installs_all_files()
     assert!(frontmatter.contains("remember this"));
     assert!(crate::MEMORY_SKILL_MD.contains("ren memory --help"));
     assert!(crate::MEMORY_SKILL_MD.contains("ren memory <subcommand> --help"));
-    assert!(crate::MEMORY_SKILL_MD.contains("ren memory init --user"));
+    assert!(
+        crate::MEMORY_SKILL_MD.contains(
+            "ren memory init --user\nren memory index --rebuild\nren memory hook install --agent \
+             codex --user"
+        ),
+        "Codex hook setup commands must be documented in execution order"
+    );
+    assert!(crate::MEMORY_SKILL_MD.contains("$CODEX_HOME/config.toml"));
+    assert!(crate::MEMORY_SKILL_MD.contains("$HOME/.codex/config.toml"));
     assert!(crate::MEMORY_SKILL_MD.contains("ren init"));
     assert!(crate::MEMORY_SKILL_MD.contains("# ren-memory"));
     assert!(
