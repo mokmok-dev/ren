@@ -63,3 +63,19 @@ ren memory show <note-id>
 
 The hyphenated `ren-memory` name refers to the skill and component; `ren memory`
 is its CLI command group.
+
+### Set up the Codex hook
+
+From the project directory whose memory vault you want to register, run these
+commands in order:
+
+```console
+ren memory init --user
+ren memory index --rebuild
+ren memory hook install --agent codex --user
+```
+
+The hook is installed in the configuration for the current `CODEX_HOME`. When
+`CODEX_HOME` is set, the target is `$CODEX_HOME/config.toml`; otherwise it is
+`$HOME/.codex/config.toml`. Run the hook installation command once for each
+`CODEX_HOME` you use, because each one has a separate Codex configuration.

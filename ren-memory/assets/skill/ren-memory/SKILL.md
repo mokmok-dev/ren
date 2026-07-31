@@ -44,6 +44,23 @@ proposal only when the user has authorized the mutation, and use the exact
 operation key returned by the CLI. Apply the same care to link, revise, archive,
 and hook changes.
 
+## Set up the Codex hook
+
+From the project directory whose memory vault the user wants to register, guide
+them through these commands in order:
+
+```bash
+ren memory init --user
+ren memory index --rebuild
+ren memory hook install --agent codex --user
+```
+
+The hook installation target depends on the current `CODEX_HOME`. When
+`CODEX_HOME` is set, the hook is written to `$CODEX_HOME/config.toml`; otherwise
+it is written to `$HOME/.codex/config.toml`. Tell the user to install the hook
+once for every `CODEX_HOME` they use, because each one has a separate Codex
+configuration.
+
 ## Keep initialization boundaries clear
 
 - Use top-level `ren init` to install the embedded ren skills for supported
