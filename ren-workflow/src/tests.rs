@@ -1685,6 +1685,128 @@ fn every_bundled_workflow_has_matching_valid_metadata_and_compiles() -> Result<(
     Ok(())
 }
 
+fn assert_implement_memory_and_review_contracts(requests: &[&AgentRequest]) {
+    assert!(
+        requests
+            .iter()
+            .find(|request| request.options.label.as_deref() == Some("prior-memory-researcher"))
+            .is_some_and(|request| {
+                request.prompt.contains("ren memory sync")
+                    && request.prompt.contains("hard limit of 10")
+                    && request
+                        .options
+                        .output_schema
+                        .as_ref()
+                        .is_some_and(|schema| {
+                            schema["properties"]["note_ids"]["maxItems"] == json!(5)
+                                && schema["properties"]["contradictions"]["maxItems"] == json!(5)
+                        })
+            })
+    );
+    assert!(
+        requests
+            .iter()
+            .find(|request| {
+                request.options.label.as_deref() == Some("memory-consistency-reviewer-round-1")
+            })
+            .is_some_and(|request| {
+                request.prompt.contains("at most 5 `show` calls")
+                    && request.prompt.contains("query the current vault")
+            })
+    );
+    assert!(
+        requests
+            .iter()
+            .find(|request| request.options.label.as_deref() == Some("memory-curator"))
+            .is_some_and(|request| {
+                request.prompt.contains("inspect the complete returned")
+                    && request
+                        .prompt
+                        .contains("ren memory promote --apply --operation <exact-operation-key>")
+                    && request
+                        .options
+                        .output_schema
+                        .as_ref()
+                        .is_some_and(|schema| {
+                            schema["properties"]["applied"]["type"] == json!("boolean")
+                                && schema["properties"]["considered_note_ids"]["maxItems"]
+                                    == json!(6)
+                                && schema["properties"]["permanent_note_ids"]["maxItems"]
+                                    == json!(6)
+                        })
+            })
+    );
+    let review_schema = requests
+        .iter()
+        .find(|request| request.options.label.as_deref() == Some("general-reviewer-round-1"))
+        .and_then(|request| request.options.output_schema.as_ref())
+        .expect("review schema");
+    assert_eq!(
+        review_schema["required"],
+        json!(["bugs", "suggestions", "nits"])
+    );
+    assert!(review_schema["properties"].get("clean").is_none());
+    assert!(review_schema["properties"].get("verdict").is_none());
+    assert!(review_schema["properties"].get("issues").is_none());
+
+    let implementer = requests
+        .iter()
+        .find(|request| request.options.label.as_deref() == Some("implementer"))
+        .expect("implementer");
+    let implementation_schema = implementer
+        .options
+        .output_schema
+        .as_ref()
+        .expect("implementation schema");
+    assert_eq!(
+        implementation_schema["required"],
+        json!([
+            "changed_files",
+            "behavior",
+            "discoveries",
+            "design_decisions",
+            "memory_contradictions",
+            "validations"
+        ])
+    );
+    assert_eq!(
+        implementation_schema["properties"]["validations"]["maxItems"],
+        json!(20)
+    );
+}
+
+fn assert_implement_slot_capabilities(requests: &[&AgentRequest]) {
+    for request in requests {
+        let label = request
+            .options
+            .label
+            .as_deref()
+            .expect("every slot has a label");
+        let expected = if label.contains("reviewer") || label == "implementation-reporter" {
+            "read-only"
+        } else {
+            "execute"
+        };
+        assert_eq!(
+            request.options.capability_mode.as_deref(),
+            Some(expected),
+            "unexpected capability for {label}"
+        );
+        if label.starts_with("memory-recorder-") {
+            let schema = request
+                .options
+                .output_schema
+                .as_ref()
+                .expect("memory recorder schema");
+            assert_eq!(
+                schema["properties"]["captured_note_ids"]["maxItems"],
+                json!(3)
+            );
+            assert_eq!(schema["properties"]["contradictions"]["maxItems"], json!(3));
+        }
+    }
+}
+
 #[test]
 fn bundled_implement_produces_bounded_review_and_fix_plan() -> Result<(), WorkflowError> {
     let workflow = crate::bundled::find("implement")
@@ -1697,18 +1819,26 @@ fn bundled_implement_produces_bounded_review_and_fix_plan() -> Result<(), Workfl
                 "effort": 4,
                 "review_rounds": 2
             })),
-            agent_budget: 13,
+            agent_budget: 19,
             ..RunOptions::default()
         },
     )?;
 
-    assert_eq!(result.phases, ["Implement", "Review and fix", "Report"]);
+    assert_eq!(
+        result.phases,
+        [
+            "Recall and implement",
+            "Review and fix",
+            "Refine memory",
+            "Report"
+        ]
+    );
     assert_eq!(
         result
             .complete
             .as_ref()
             .map(|complete| &complete["reviewers_per_round"]),
-        Some(&json!(5))
+        Some(&json!(6))
     );
     assert_eq!(
         result
@@ -1722,7 +1852,15 @@ fn bundled_implement_produces_bounded_review_and_fix_plan() -> Result<(), Workfl
             .complete
             .as_ref()
             .map(|complete| &complete["budget"]["spent"]),
-        Some(&json!(13))
+        Some(&json!(19))
+    );
+    assert_eq!(
+        result
+            .complete
+            .as_ref()
+            .and_then(|complete| complete["memory"]["captures"].as_array())
+            .map(Vec::len),
+        Some(2)
     );
 
     let requests = result
@@ -1735,17 +1873,13 @@ fn bundled_implement_produces_bounded_review_and_fix_plan() -> Result<(), Workfl
             _ => Vec::new(),
         })
         .collect::<Vec<_>>();
-    assert_eq!(requests.len(), 13);
+    assert_eq!(requests.len(), 19);
     assert_eq!(
         requests[0].options.capability_mode.as_deref(),
         Some("execute")
     );
     assert_eq!(
         requests[1].options.capability_mode.as_deref(),
-        Some("read-only")
-    );
-    assert_eq!(
-        requests[6].options.capability_mode.as_deref(),
         Some("execute")
     );
     assert!(
@@ -1753,12 +1887,104 @@ fn bundled_implement_produces_bounded_review_and_fix_plan() -> Result<(), Workfl
             .iter()
             .all(|request| request.options.output_schema.is_some())
     );
-    assert!(requests[6].prompt.contains("<review-packet-json>"));
+    assert_implement_memory_and_review_contracts(&requests);
+    assert_implement_slot_capabilities(&requests);
     assert!(
         requests
-            .last()
-            .is_some_and(|request| request.prompt.contains("<final-review-packet-json>"))
+            .iter()
+            .find(|request| { request.options.label.as_deref() == Some("implementer-fix-round-1") })
+            .is_some_and(|request| request.prompt.contains("<review-packet-json>"))
     );
+    assert!(requests.iter().any(|request| {
+        request.options.label.as_deref() == Some("memory-recorder-initial")
+            && request.prompt.contains("<implementation-packet-json>")
+    }));
+    assert!(requests.last().is_some_and(|request| {
+        request.prompt.contains("<final-review-packet-json>")
+            && request.prompt.contains("<memory-refinement-json>")
+            && request.prompt.contains("<prior-memory-json>")
+            && request.prompt.contains("<implementation-packets-json>")
+            && request.prompt.contains("<captured-memory-json>")
+            && request.prompt.contains("PR-description-ready")
+    }));
+    Ok(())
+}
+
+#[test]
+fn bundled_implement_budget_formula_and_plan_size_stay_bounded() -> Result<(), WorkflowError> {
+    let workflow = crate::bundled::find("implement")
+        .ok_or_else(|| WorkflowError::InvalidConfig("implement missing".into()))?;
+    for (effort, rounds, expected_budget) in [
+        (1, 1, 7),
+        (1, 3, 15),
+        (2, 3, 18),
+        (3, 2, 15),
+        (4, 2, 19),
+        (5, 8, 75),
+    ] {
+        let task = if effort == 5 && rounds == 8 {
+            "x".repeat(500)
+        } else {
+            "Add a deterministic parser".into()
+        };
+        let args = json!({
+            "task": task,
+            "effort": effort,
+            "review_rounds": rounds
+        });
+        let result = Engine::new(EchoHost).run_script(
+            workflow.source,
+            RunOptions {
+                args: Some(args.clone()),
+                agent_budget: expected_budget,
+                ..RunOptions::default()
+            },
+        )?;
+        assert_eq!(
+            result
+                .complete
+                .as_ref()
+                .map(|complete| &complete["budget"]["spent"]),
+            Some(&json!(expected_budget)),
+            "effort={effort}, rounds={rounds}"
+        );
+        let prompt_bytes = result
+            .journal
+            .entries()
+            .iter()
+            .map(|entry| match entry {
+                JournalEntry::Agent { request, .. } => request.prompt.len(),
+                JournalEntry::Parallel { requests, .. } => {
+                    requests.iter().map(|request| request.prompt.len()).sum()
+                },
+                _ => 0,
+            })
+            .sum::<usize>();
+        assert!(
+            prompt_bytes < 1_000_000,
+            "plan grew to {prompt_bytes} bytes for effort={effort}, rounds={rounds}"
+        );
+        let serialized_bytes = serde_json::to_vec(&result)
+            .expect("workflow result must serialize")
+            .len();
+        assert!(
+            serialized_bytes < 2_000_000,
+            "serialized plan grew to {serialized_bytes} bytes for effort={effort}, rounds={rounds}"
+        );
+
+        let rejected = Engine::new(EchoHost).run_script(
+            workflow.source,
+            RunOptions {
+                args: Some(args),
+                agent_budget: expected_budget - 1,
+                ..RunOptions::default()
+            },
+        );
+        assert!(
+            matches!(rejected, Err(WorkflowError::Runtime(ref message)) if message.contains("agent budget")),
+            "one-slot-short budget unexpectedly accepted for effort={effort}, rounds={rounds}: {rejected:?}"
+        );
+    }
     Ok(())
 }
 
@@ -1767,6 +1993,10 @@ fn bundled_implement_rejects_invalid_values_even_without_cli_schema_validation()
     let workflow = crate::bundled::find("implement").expect("implement must be bundled");
     for (args, expected) in [
         (json!({"task": ""}), "task must not be empty"),
+        (
+            json!({"task": "x".repeat(501)}),
+            "task must be at most 500 characters",
+        ),
         (
             json!({"task": "Do work", "effort": 0}),
             "effort must be between 1 and 5",
