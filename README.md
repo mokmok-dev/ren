@@ -49,6 +49,16 @@ ren workflow run <name-or-path> --args '<json>'
 
 Run `ren workflow --help` for the complete command reference.
 
+The bundled `implement` workflow connects implementation work back to project
+memory. It searches and inspects relevant prior notes, captures bounded fleeting
+notes after implementation and fix passes, checks the change for contradictions
+with remembered decisions during independent review, and promotes verified
+knowledge through an inspect-then-explicitly-apply proposal. Its final report is
+ready to adapt into a PR description and includes the memory operations used.
+Projects without a registered memory vault still run; the report records that
+memory work was skipped. Task text is limited to 500 characters so the
+maximum-effort, eight-round execution plan remains bounded.
+
 ## ren-memory
 
 Capture and retrieve durable project knowledge through the local ren-memory
