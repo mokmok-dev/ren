@@ -52,6 +52,7 @@
           treefmt = {
             projectRootFile = "flake.nix";
             programs = {
+              actionlint.enable = true;
               nixfmt.enable = true;
               taplo.enable = true;
               yamlfmt.enable = true;
