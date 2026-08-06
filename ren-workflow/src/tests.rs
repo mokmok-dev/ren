@@ -1171,15 +1171,36 @@ fn registry_paths_use_ren_namespace_for_project_and_user() -> Result<(), Workflo
 fn bridge_paths_and_contents_cover_every_agent_and_scope() -> Result<(), WorkflowError> {
     let base = TempDir::new("bridges")?;
     let cases = [
-        (crate::bridge::Agent::Claude, ".claude/commands/ren.md"),
-        (crate::bridge::Agent::Cursor, ".cursor/commands/ren.md"),
-        (crate::bridge::Agent::Codex, ".codex/prompts/ren.md"),
-        (crate::bridge::Agent::Grok, ".grok/commands/ren.md"),
+        (
+            crate::bridge::Agent::Claude,
+            ".claude/commands/ren.md",
+            ".claude/commands/ren.md",
+        ),
+        (
+            crate::bridge::Agent::Cursor,
+            ".cursor/commands/ren.md",
+            ".cursor/commands/ren.md",
+        ),
+        (
+            crate::bridge::Agent::Codex,
+            ".codex/prompts/ren.md",
+            ".codex/prompts/ren.md",
+        ),
+        (
+            crate::bridge::Agent::Grok,
+            ".grok/commands/ren.md",
+            ".grok/commands/ren.md",
+        ),
+        (
+            crate::bridge::Agent::Pi,
+            ".pi/agent/prompts/ren.md",
+            ".pi/prompts/ren.md",
+        ),
     ];
-    for (agent, relative) in cases {
-        for scope in [
-            crate::bridge::BridgeScope::Global,
-            crate::bridge::BridgeScope::Project,
+    for (agent, global_relative, project_relative) in cases {
+        for (scope, relative) in [
+            (crate::bridge::BridgeScope::Global, global_relative),
+            (crate::bridge::BridgeScope::Project, project_relative),
         ] {
             let definition = crate::bridge::bridge_definition(base.path(), agent, scope);
             assert_eq!(definition.path, base.path().join(relative));
@@ -1203,14 +1224,16 @@ fn bridge_paths_and_contents_cover_every_agent_and_scope() -> Result<(), Workflo
 #[test]
 fn init_installs_skill_for_every_agent_and_scope() -> Result<(), WorkflowError> {
     let base = TempDir::new("skills")?;
+    let user = crate::init::InitScope::User;
     let cases = [
         (crate::bridge::Agent::Claude, ".claude/skills/ren-workflow"),
         (crate::bridge::Agent::Cursor, ".cursor/skills/ren-workflow"),
         (crate::bridge::Agent::Codex, ".codex/skills/ren-workflow"),
         (crate::bridge::Agent::Grok, ".grok/skills/ren-workflow"),
+        (crate::bridge::Agent::Pi, ".pi/agent/skills/ren-workflow"),
     ];
     for (agent, relative_dir) in cases {
-        let definition = crate::init::skill_definition(base.path(), agent);
+        let definition = crate::init::skill_definition(base.path(), user, agent);
         assert_eq!(definition.dir, base.path().join(relative_dir));
         assert_eq!(definition.files.len(), crate::init::SKILL_FILES.len());
 
@@ -1256,6 +1279,7 @@ fn init_preflights_every_file_before_writing() -> Result<(), WorkflowError> {
     let base = TempDir::new("skill-preflight")?;
     let definition = crate::init::skill_definition_for(
         base.path(),
+        crate::init::InitScope::User,
         crate::bridge::Agent::Codex,
         crate::init::EmbeddedSkill {
             name: "test-skill",
@@ -1355,7 +1379,11 @@ fn init_rejects_symlinked_nested_directory_without_writing_outside() -> Result<(
 
     let base = TempDir::new("skill-symlinked-agents")?;
     let outside = TempDir::new("skill-symlinked-agents-outside")?;
-    let definition = crate::init::skill_definition(base.path(), crate::bridge::Agent::Codex);
+    let definition = crate::init::skill_definition(
+        base.path(),
+        crate::init::InitScope::User,
+        crate::bridge::Agent::Codex,
+    );
     fs::create_dir_all(&definition.dir)?;
     // If traversal followed the link and read this matching metadata, the
     // installation could incorrectly appear idempotent.
@@ -1387,7 +1415,11 @@ fn init_force_rejects_symlink_target_without_overwriting_outside() -> Result<(),
 
     let base = TempDir::new("skill-force-symlink")?;
     let outside = TempDir::new("skill-force-symlink-outside")?;
-    let definition = crate::init::skill_definition(base.path(), crate::bridge::Agent::Codex);
+    let definition = crate::init::skill_definition(
+        base.path(),
+        crate::init::InitScope::User,
+        crate::bridge::Agent::Codex,
+    );
     let agents = definition.dir.join("agents");
     fs::create_dir_all(&agents)?;
     let outside_file = outside.path().join("outside.yaml");
@@ -1411,7 +1443,11 @@ fn init_force_rejects_agents_symlink_swap_after_preflight() -> Result<(), Workfl
 
     let base = TempDir::new("skill-force-swap")?;
     let outside = TempDir::new("skill-force-swap-outside")?;
-    let definition = crate::init::skill_definition(base.path(), crate::bridge::Agent::Codex);
+    let definition = crate::init::skill_definition(
+        base.path(),
+        crate::init::InitScope::User,
+        crate::bridge::Agent::Codex,
+    );
     crate::init::install_skill(&definition, false)?;
     let agents = definition.dir.join("agents");
     let original_agents = definition.dir.join("agents-original");
@@ -1453,7 +1489,11 @@ fn init_force_rejects_final_target_symlink_swap_after_preflight() -> Result<(), 
 
     let base = TempDir::new("skill-force-target-swap")?;
     let outside = TempDir::new("skill-force-target-swap-outside")?;
-    let definition = crate::init::skill_definition(base.path(), crate::bridge::Agent::Codex);
+    let definition = crate::init::skill_definition(
+        base.path(),
+        crate::init::InitScope::User,
+        crate::bridge::Agent::Codex,
+    );
     crate::init::install_skill(&definition, false)?;
     let metadata = definition.dir.join("agents/openai.yaml");
     let original_metadata = definition.dir.join("agents/openai-original.yaml");
@@ -1493,7 +1533,11 @@ fn init_rejects_base_ancestor_swap_after_preflight() -> Result<(), WorkflowError
     fs::create_dir_all(outside_project.join(".codex/skills/ren-workflow/agents"))?;
     let outside_metadata = outside_project.join(".codex/skills/ren-workflow/agents/openai.yaml");
     fs::write(&outside_metadata, "outside contents")?;
-    let definition = crate::init::skill_definition(&base, crate::bridge::Agent::Codex);
+    let definition = crate::init::skill_definition(
+        &base,
+        crate::init::InitScope::User,
+        crate::bridge::Agent::Codex,
+    );
 
     let error = crate::init::install_skills_with_pre_apply_hook(
         std::slice::from_ref(&definition),
@@ -1521,7 +1565,11 @@ fn init_force_rejects_multiply_linked_target_before_reading_or_writing() -> Resu
 
     let base = TempDir::new("skill-force-hardlink")?;
     let outside = TempDir::new("skill-force-hardlink-outside")?;
-    let definition = crate::init::skill_definition(base.path(), crate::bridge::Agent::Codex);
+    let definition = crate::init::skill_definition(
+        base.path(),
+        crate::init::InitScope::User,
+        crate::bridge::Agent::Codex,
+    );
     let metadata = definition.dir.join("agents/openai.yaml");
     fs::create_dir_all(
         metadata
@@ -1545,7 +1593,11 @@ fn init_force_rejects_multiply_linked_target_before_reading_or_writing() -> Resu
 #[test]
 fn init_rejects_oversized_sparse_target_without_unbounded_read() -> Result<(), WorkflowError> {
     let base = TempDir::new("skill-sparse-target")?;
-    let definition = crate::init::skill_definition(base.path(), crate::bridge::Agent::Codex);
+    let definition = crate::init::skill_definition(
+        base.path(),
+        crate::init::InitScope::User,
+        crate::bridge::Agent::Codex,
+    );
     let metadata = definition.dir.join("agents/openai.yaml");
     fs::create_dir_all(
         metadata
@@ -1568,7 +1620,11 @@ fn init_rejects_oversized_sparse_target_without_unbounded_read() -> Result<(), W
 #[test]
 fn init_fails_closed_without_handle_relative_no_reparse_support() -> Result<(), WorkflowError> {
     let base = TempDir::new("skill-unsupported-platform")?;
-    let definition = crate::init::skill_definition(base.path(), crate::bridge::Agent::Codex);
+    let definition = crate::init::skill_definition(
+        base.path(),
+        crate::init::InitScope::User,
+        crate::bridge::Agent::Codex,
+    );
     assert!(matches!(
         crate::init::install_skill(&definition, false),
         Err(WorkflowError::UnsafeSkillPath(_))

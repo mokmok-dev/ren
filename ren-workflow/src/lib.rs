@@ -300,7 +300,7 @@ pub fn run_init_with_skills(
     let mut definitions = Vec::new();
     for agent in agents {
         for skill in std::iter::once(WORKFLOW_SKILL).chain(additional_skills.iter().copied()) {
-            definitions.push((skill, skill_definition_for(&base, agent, skill)));
+            definitions.push((skill, skill_definition_for(&base, scope, agent, skill)));
         }
     }
 
