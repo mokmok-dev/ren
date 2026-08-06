@@ -16,6 +16,7 @@ pub enum Agent {
     Codex,
     Grok,
     OpenCode,
+    Pi,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +58,12 @@ const fn agent_spec(agent: Agent) -> AgentSpec {
         Agent::OpenCode => AgentSpec {
             global_path: ".opencode/command/ren.md",
             project_path: ".opencode/command/ren.md",
+        },
+        // pi's dispatcher is a prompt template: global templates live one
+        // level deeper than project templates.
+        Agent::Pi => AgentSpec {
+            global_path: ".pi/agent/prompts/ren.md",
+            project_path: ".pi/prompts/ren.md",
         },
     }
 }

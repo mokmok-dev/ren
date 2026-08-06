@@ -49,6 +49,12 @@ ren workflow run <name-or-path> --args '<json>'
 
 Run `ren workflow --help` for the complete command reference.
 
+The `ren init` command installs the embedded skills into every supported coding
+agent — Claude, Cursor, Codex, Grok, OpenCode, and pi — or a single one with
+`ren init --agent <agent>` (user scope by default, `--project` for the current
+repository). pi reads user-global skills from `~/.pi/agent/skills` and project
+skills from `.pi/skills`.
+
 The bundled `implement` workflow connects implementation work back to project
 memory. It searches and inspects relevant prior notes, captures bounded fleeting
 notes after implementation and fix passes, checks the change for contradictions

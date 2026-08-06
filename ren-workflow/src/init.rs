@@ -2,8 +2,6 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::{WorkflowError, bridge::Agent};
 
-/// Directory name every skill-capable agent uses under its config root.
-const SKILL_ROOT: &str = "skills";
 /// Folder name for this specific skill.
 const SKILL_NAME: &str = "ren-workflow";
 
@@ -81,44 +79,64 @@ const fn agent_config_dir(agent: Agent) -> &'static str {
         Agent::Codex => ".codex",
         Agent::Grok => ".grok",
         Agent::OpenCode => ".opencode",
+        Agent::Pi => ".pi",
+    }
+}
+
+/// The skill root relative to an agent's config directory for a scope.
+///
+/// Most agents read `<config>/skills` everywhere. pi keeps user-global skills
+/// one level deeper under `<config>/agent/skills`, while project skills stay
+/// at `<config>/skills`.
+const fn agent_skill_root(
+    scope: InitScope,
+    agent: Agent,
+) -> &'static str {
+    match (agent, scope) {
+        (Agent::Pi, InitScope::User) => "agent/skills",
+        _ => "skills",
     }
 }
 
 /// Every agent the skill installer supports.
 #[must_use]
-pub const fn supported_agents() -> [Agent; 5] {
+pub const fn supported_agents() -> [Agent; 6] {
     [
         Agent::Claude,
         Agent::Cursor,
         Agent::Codex,
         Agent::Grok,
         Agent::OpenCode,
+        Agent::Pi,
     ]
 }
 
 /// Builds the install plan for one agent rooted at `base_dir`.
 ///
 /// `base_dir` is the user's home directory for [`InitScope::User`] or the
-/// repository root for [`InitScope::Project`]; both resolve to the same
-/// `<agent>/skills/ren-workflow` layout.
+/// repository root for [`InitScope::Project`]; both resolve to
+/// `<agent>/skills/ren-workflow` for every agent, except pi, whose user-global
+/// skills live at `<agent>/agent/skills/ren-workflow`.
 #[must_use]
 pub fn skill_definition(
     base_dir: &Path,
+    scope: InitScope,
     agent: Agent,
 ) -> SkillDefinition {
-    skill_definition_for(base_dir, agent, WORKFLOW_SKILL)
+    skill_definition_for(base_dir, scope, agent, WORKFLOW_SKILL)
 }
 
 /// Builds the install plan for any embedded `skill` rooted at `base_dir`.
 #[must_use]
 pub fn skill_definition_for(
     base_dir: &Path,
+    scope: InitScope,
     agent: Agent,
     skill: EmbeddedSkill,
 ) -> SkillDefinition {
     let dir = base_dir
         .join(agent_config_dir(agent))
-        .join(SKILL_ROOT)
+        .join(agent_skill_root(scope, agent))
         .join(skill.name);
     let files = skill
         .files

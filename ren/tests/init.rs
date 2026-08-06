@@ -49,6 +49,30 @@ fn top_level_init_installs_both_skills_for_all_agents_and_scopes()
         }
     }
 
+    // pi keeps user-global skills under `.pi/agent/skills` but project skills
+    // under `.pi/skills`.
+    for skill_root in [
+        project.path().join(".pi/skills"),
+        user.path().join(".pi/agent/skills"),
+    ] {
+        assert_eq!(
+            fs::read_to_string(skill_root.join("ren-workflow/SKILL.md"))?,
+            ren_workflow::SKILL_MD
+        );
+        assert_eq!(
+            fs::read_to_string(skill_root.join("ren-workflow/agents/openai.yaml"))?,
+            ren_workflow::OPENAI_YAML
+        );
+        assert_eq!(
+            fs::read_to_string(skill_root.join("ren-memory/SKILL.md"))?,
+            ren_memory::MEMORY_SKILL_MD
+        );
+        assert_eq!(
+            fs::read_to_string(skill_root.join("ren-memory/agents/openai.yaml"))?,
+            ren_memory::MEMORY_OPENAI_YAML
+        );
+    }
+
     Ok(())
 }
 

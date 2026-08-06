@@ -1417,8 +1417,12 @@ fn embedded_memory_skill_has_matching_content_and_installs_all_files()
     {
         let base = tempfile::tempdir()?;
         for agent in ren_workflow::supported_agents() {
-            let definition =
-                ren_workflow::skill_definition_for(base.path(), agent, crate::MEMORY_SKILL);
+            let definition = ren_workflow::skill_definition_for(
+                base.path(),
+                ren_workflow::InitScope::User,
+                agent,
+                crate::MEMORY_SKILL,
+            );
             assert!(definition.dir.ends_with("skills/ren-memory"));
             assert_eq!(definition.files.len(), crate::MEMORY_SKILL_FILES.len());
             ren_workflow::install_skill(&definition, false)?;
