@@ -15,6 +15,7 @@ pub enum Agent {
     Cursor,
     Codex,
     Grok,
+    OpenCode,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +53,10 @@ const fn agent_spec(agent: Agent) -> AgentSpec {
         Agent::Grok => AgentSpec {
             global_path: ".grok/commands/ren.md",
             project_path: ".grok/commands/ren.md",
+        },
+        Agent::OpenCode => AgentSpec {
+            global_path: ".opencode/command/ren.md",
+            project_path: ".opencode/command/ren.md",
         },
     }
 }

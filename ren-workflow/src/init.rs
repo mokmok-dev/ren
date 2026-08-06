@@ -80,13 +80,20 @@ const fn agent_config_dir(agent: Agent) -> &'static str {
         Agent::Cursor => ".cursor",
         Agent::Codex => ".codex",
         Agent::Grok => ".grok",
+        Agent::OpenCode => ".opencode",
     }
 }
 
 /// Every agent the skill installer supports.
 #[must_use]
-pub const fn supported_agents() -> [Agent; 4] {
-    [Agent::Claude, Agent::Cursor, Agent::Codex, Agent::Grok]
+pub const fn supported_agents() -> [Agent; 5] {
+    [
+        Agent::Claude,
+        Agent::Cursor,
+        Agent::Codex,
+        Agent::Grok,
+        Agent::OpenCode,
+    ]
 }
 
 /// Builds the install plan for one agent rooted at `base_dir`.
