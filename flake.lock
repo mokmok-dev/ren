@@ -69,6 +69,7 @@
         "flake-parts": "flake-parts",
         "nixpkgs": "nixpkgs",
         "rust-flake": "rust-flake",
+        "rust-overlay": "rust-overlay",
         "treefmt-nix": "treefmt-nix"
       }
     },
@@ -78,7 +79,9 @@
         "nixpkgs": [
           "nixpkgs"
         ],
-        "rust-overlay": "rust-overlay"
+        "rust-overlay": [
+          "rust-overlay"
+        ]
       },
       "locked": {
         "lastModified": 1783213177,
@@ -97,7 +100,6 @@
     "rust-overlay": {
       "inputs": {
         "nixpkgs": [
-          "rust-flake",
           "nixpkgs"
         ]
       },
