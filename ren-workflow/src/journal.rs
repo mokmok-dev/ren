@@ -253,10 +253,11 @@ impl Journal {
         path: &Path,
     ) -> Result<(), WorkflowError> {
         let temporary = checkpoint_temporary_path(path);
-        fs::write(&temporary, self.to_json()?)?;
+        fs::write(&temporary, self.to_json()?)
+            .map_err(|error| WorkflowError::io(&temporary, error))?;
         if let Err(error) = fs::rename(&temporary, path) {
             let _ = fs::remove_file(&temporary);
-            return Err(error.into());
+            return Err(WorkflowError::io(path, error));
         }
         Ok(())
     }

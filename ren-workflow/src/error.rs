@@ -1,3 +1,5 @@
+use std::{io, path::PathBuf};
+
 use thiserror::Error;
 
 use crate::host::Capability;
@@ -97,6 +99,57 @@ pub enum WorkflowError {
     )]
     UnsafeSkillPath(std::path::PathBuf),
     /// Reading or writing workflow state failed.
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("I/O error at {path}: {source}")]
+    Io {
+        /// Path involved in the I/O operation.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+}
+
+impl From<io::Error> for WorkflowError {
+    fn from(error: io::Error) -> Self {
+        Self::io(".", error)
+    }
+}
+
+impl WorkflowError {
+    /// Creates an I/O error tied to a specific path.
+    pub(crate) fn io(
+        path: impl Into<PathBuf>,
+        source: io::Error,
+    ) -> Self {
+        Self::Io {
+            path: path.into(),
+            source,
+        }
+    }
+
+    /// Returns a stable error class for machine-readable error output.
+    #[must_use]
+    pub const fn class(&self) -> &'static str {
+        match self {
+            Self::InvalidConfig(_)
+            | Self::InvalidBudget(_)
+            | Self::InvalidMeta(_)
+            | Self::InvalidCapabilityMode(_)
+            | Self::InvalidWorkflowName(_)
+            | Self::HomeUnavailable => "invalid_config",
+            Self::Compile(_) => "compile_error",
+            Self::Runtime(_) => "runtime_error",
+            Self::CapabilityDenied { .. } => "capability_denied",
+            Self::JournalDivergence(_) => "journal_error",
+            Self::Value(_) => "value_error",
+            Self::Json(_) => "json_error",
+            Self::WorkflowNotFound { .. } | Self::BundledWorkflowNotFound(_) => "not_found",
+            Self::WorkflowExists(_) | Self::BridgeExists(_) | Self::SkillExists(_) => {
+                "already_exists"
+            },
+            Self::BundledNameRewrite { .. } => "bundle_error",
+            Self::UnsafeSkillPath(_) => "unsafe_path",
+            Self::Io { .. } => "io_error",
+        }
+    }
 }

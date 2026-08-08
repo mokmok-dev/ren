@@ -58,7 +58,7 @@ pub struct Discovery {
 ///
 /// Returns [`WorkflowError::Io`] when the current directory cannot be resolved.
 pub fn project_workflow_dir() -> Result<PathBuf, WorkflowError> {
-    let cwd = std::env::current_dir()?;
+    let cwd = std::env::current_dir().map_err(|error| WorkflowError::io(".", error))?;
     Ok(project_workflow_dir_in(&cwd))
 }
 
@@ -165,9 +165,8 @@ pub fn resolve_in(
 /// [`WorkflowError::BundledWorkflowNotFound`] if embedded data is inconsistent.
 pub fn load_source(workflow: &DiscoveredWorkflow) -> Result<String, WorkflowError> {
     match workflow.source {
-        WorkflowSource::Project | WorkflowSource::User => {
-            fs::read_to_string(&workflow.path).map_err(WorkflowError::from)
-        },
+        WorkflowSource::Project | WorkflowSource::User => fs::read_to_string(&workflow.path)
+            .map_err(|error| WorkflowError::io(&workflow.path, error)),
         WorkflowSource::Bundled => bundled::find(&workflow.name)
             .map(|bundled| bundled.source.to_owned())
             .ok_or_else(|| WorkflowError::BundledWorkflowNotFound(workflow.name.clone())),
@@ -267,6 +266,6 @@ fn add_workflow(
 /// Returns [`WorkflowError::Io`] when the file cannot be read or
 /// [`WorkflowError::InvalidMeta`] when the metadata is invalid.
 pub fn load_meta(path: &Path) -> Result<WorkflowMeta, WorkflowError> {
-    let script = fs::read_to_string(path)?;
+    let script = fs::read_to_string(path).map_err(|error| WorkflowError::io(path, error))?;
     meta::extract(&script)
 }
