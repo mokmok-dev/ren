@@ -24,6 +24,6 @@ pub fn remove_from_store(
             path: target,
         });
     }
-    fs::remove_file(&target)?;
+    fs::remove_file(&target).map_err(|error| WorkflowError::io(&target, error))?;
     Ok(target)
 }

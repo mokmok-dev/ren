@@ -1330,7 +1330,7 @@ fn init_rolls_back_files_after_an_apply_failure() -> Result<(), WorkflowError> {
         fs::create_dir_all(&second_file)?;
         crate::init::install_skill(&definition, false)
     };
-    assert!(matches!(result, Err(WorkflowError::Io(_))));
+    assert!(matches!(result, Err(WorkflowError::Io { .. })));
     assert!(
         !first_file.exists(),
         "the earlier file must be removed when the batch fails"
@@ -1366,7 +1366,7 @@ fn init_force_rollback_restores_pre_existing_contents() -> Result<(), WorkflowEr
         true,
         || fs::write(&second_file, "competing contents").expect("test conflict must be created"),
     );
-    assert!(matches!(result, Err(WorkflowError::Io(_))));
+    assert!(matches!(result, Err(WorkflowError::Io { .. })));
     assert_eq!(fs::read_to_string(first_file)?, "original contents");
     assert_eq!(fs::read_to_string(second_file)?, "competing contents");
     Ok(())

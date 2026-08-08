@@ -93,9 +93,10 @@ pub fn install_bridge(
         return Err(WorkflowError::BridgeExists(definition.path.clone()));
     }
     if let Some(parent) = definition.path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).map_err(|error| WorkflowError::io(parent, error))?;
     }
-    fs::write(&definition.path, definition.contents)?;
+    fs::write(&definition.path, definition.contents)
+        .map_err(|error| WorkflowError::io(&definition.path, error))?;
     Ok(())
 }
 
@@ -103,6 +104,7 @@ pub fn uninstall_bridge(definition: &BridgeDefinition) -> Result<bool, WorkflowE
     if !definition.path.exists() {
         return Ok(false);
     }
-    fs::remove_file(&definition.path)?;
+    fs::remove_file(&definition.path)
+        .map_err(|error| WorkflowError::io(&definition.path, error))?;
     Ok(true)
 }

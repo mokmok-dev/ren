@@ -745,6 +745,7 @@ dependencies = [
  "ren-workflow",
  "serde_json",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]

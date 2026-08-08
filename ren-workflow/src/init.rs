@@ -399,9 +399,11 @@ mod platform {
     }
 
     fn open_root(path: &Path) -> Result<RootHandle, WorkflowError> {
-        let canonical = fs::canonicalize(path)?;
+        let canonical = fs::canonicalize(path).map_err(|error| WorkflowError::io(path, error))?;
         let dir = open_absolute_directory(&canonical)?;
-        let metadata = dir.metadata()?;
+        let metadata = dir
+            .metadata()
+            .map_err(|error| WorkflowError::io(&canonical, error))?;
         if !metadata.is_dir() {
             return Err(WorkflowError::UnsafeSkillPath(path.to_path_buf()));
         }
@@ -446,7 +448,9 @@ mod platform {
         relative: &Path,
         created_dirs: &mut Vec<CreatedDirectory>,
     ) -> Result<File, WorkflowError> {
-        let mut current = root.try_clone()?;
+        let mut current = root
+            .try_clone()
+            .map_err(|error| WorkflowError::io(root_path, error))?;
         let mut display = root_path.to_path_buf();
         for component in relative.components() {
             let name = component.as_os_str();
@@ -457,18 +461,22 @@ mod platform {
                     let created = match mkdirat(&current, name, Mode::from_raw_mode(0o755)) {
                         Ok(()) => true,
                         Err(Errno::EXIST) => false,
-                        Err(error) => return Err(WorkflowError::Io(error.into())),
+                        Err(error) => return Err(WorkflowError::io(&display, error.into())),
                     };
                     let child = openat(&current, name, DIRECTORY_FLAGS, Mode::empty())
                         .map(File::from)
                         .map_err(|error| component_error(error, &display))?;
-                    let metadata = child.metadata()?;
+                    let metadata = child
+                        .metadata()
+                        .map_err(|error| WorkflowError::io(&display, error))?;
                     if !metadata.is_dir() {
                         return Err(WorkflowError::UnsafeSkillPath(display));
                     }
                     if created {
                         created_dirs.push(CreatedDirectory {
-                            parent: current.try_clone()?,
+                            parent: current
+                                .try_clone()
+                                .map_err(|error| WorkflowError::io(&display, error))?,
                             name: name.to_os_string(),
                             path: display.clone(),
                             identity: identity(&metadata),
@@ -492,7 +500,9 @@ mod platform {
             Err(Errno::NOENT) => return Ok(None),
             Err(error) => return Err(component_error(error, path)),
         };
-        let metadata = target.metadata()?;
+        let metadata = target
+            .metadata()
+            .map_err(|error| WorkflowError::io(path, error))?;
         if !metadata.is_file() || metadata.nlink() != 1 {
             return Err(WorkflowError::UnsafeSkillPath(path.to_path_buf()));
         }
@@ -502,7 +512,8 @@ mod platform {
         let mut installed = Vec::new();
         std::io::Read::by_ref(&mut target)
             .take(MAX_EXISTING_SKILL_BYTES + 1)
-            .read_to_end(&mut installed)?;
+            .read_to_end(&mut installed)
+            .map_err(|error| WorkflowError::io(path, error))?;
         if u64::try_from(installed.len()).unwrap_or(u64::MAX) > MAX_EXISTING_SKILL_BYTES {
             return Err(WorkflowError::UnsafeSkillPath(path.to_path_buf()));
         }
@@ -518,7 +529,9 @@ mod platform {
         let target = openat(parent, name, flags, Mode::empty())
             .map(File::from)
             .map_err(|error| component_error(error, path))?;
-        let metadata = target.metadata()?;
+        let metadata = target
+            .metadata()
+            .map_err(|error| WorkflowError::io(path, error))?;
         if !metadata.is_file() || metadata.nlink() != 1 {
             return Err(WorkflowError::UnsafeSkillPath(path.to_path_buf()));
         }
@@ -647,17 +660,23 @@ mod platform {
                 let cleanup_error = unlinkat(&pending.parent, &name, AtFlags::empty())
                     .err()
                     .map(io::Error::from);
-                return Err(with_rollback_error(WorkflowError::Io(error), cleanup_error));
+                return Err(with_rollback_error(
+                    WorkflowError::io(&pending.path, error),
+                    cleanup_error,
+                ));
             }
             return Ok((name, target));
         }
-        Err(WorkflowError::Io(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!(
-                "could not allocate a private staging file beside {}",
-                pending.path.display()
+        Err(WorkflowError::io(
+            &pending.path,
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "could not allocate a private staging file beside {}",
+                    pending.path.display()
+                ),
             ),
-        )))
+        ))
     }
 
     fn write_contents(file: &mut PendingSkillFile) -> Result<(), WorkflowError> {
@@ -665,9 +684,15 @@ mod platform {
             .target
             .as_mut()
             .ok_or_else(|| WorkflowError::UnsafeSkillPath(file.path.clone()))?;
-        target.set_len(0)?;
-        target.seek(SeekFrom::Start(0))?;
-        target.write_all(file.contents.as_bytes())?;
+        target
+            .set_len(0)
+            .map_err(|error| WorkflowError::io(&file.path, error))?;
+        target
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| WorkflowError::io(&file.path, error))?;
+        target
+            .write_all(file.contents.as_bytes())
+            .map_err(|error| WorkflowError::io(&file.path, error))?;
         Ok(())
     }
 
@@ -675,13 +700,30 @@ mod platform {
         verify_root(&file.root)?;
         let current_parent =
             open_existing_directories(&file.root.dir, &file.root.path, &file.parent_relative)?;
-        if identity(&current_parent.metadata()?) != identity(&file.parent.metadata()?) {
+        if identity(
+            &current_parent
+                .metadata()
+                .map_err(|error| WorkflowError::io(&file.parent_relative, error))?,
+        ) != identity(
+            &file
+                .parent
+                .metadata()
+                .map_err(|error| WorkflowError::io(&file.path, error))?,
+        ) {
             return Err(WorkflowError::UnsafeSkillPath(file.path.clone()));
         }
         if let Some(target) = &file.target {
             let current =
                 open_existing_target(&current_parent, &file.name, &file.path, READ_FLAGS)?;
-            if identity(&current.metadata()?) != identity(&target.metadata()?) {
+            if identity(
+                &current
+                    .metadata()
+                    .map_err(|error| WorkflowError::io(&file.path, error))?,
+            ) != identity(
+                &target
+                    .metadata()
+                    .map_err(|error| WorkflowError::io(&file.path, error))?,
+            ) {
                 return Err(WorkflowError::UnsafeSkillPath(file.path.clone()));
             }
         }
@@ -690,7 +732,12 @@ mod platform {
 
     fn verify_root(root: &RootHandle) -> Result<(), WorkflowError> {
         let current = open_absolute_directory(&root.path)?;
-        if identity(&current.metadata()?) != root.identity {
+        if identity(
+            &current
+                .metadata()
+                .map_err(|error| WorkflowError::io(&root.path, error))?,
+        ) != root.identity
+        {
             return Err(WorkflowError::UnsafeSkillPath(root.path.clone()));
         }
         Ok(())
@@ -701,7 +748,9 @@ mod platform {
         root_path: &Path,
         relative: &Path,
     ) -> Result<File, WorkflowError> {
-        let mut current = root.try_clone()?;
+        let mut current = root
+            .try_clone()
+            .map_err(|error| WorkflowError::io(root_path, error))?;
         let mut display = root_path.to_path_buf();
         for component in relative.components() {
             display.push(component.as_os_str());
@@ -825,7 +874,7 @@ mod platform {
         if matches!(error, Errno::LOOP | Errno::NOTDIR) {
             WorkflowError::UnsafeSkillPath(path.to_path_buf())
         } else {
-            WorkflowError::Io(error.into())
+            WorkflowError::io(path, error.into())
         }
     }
 
@@ -842,10 +891,13 @@ mod platform {
     ) -> WorkflowError {
         match rollback_error {
             None => install_error,
-            Some(rollback_error) => WorkflowError::Io(io::Error::other(format!(
-                "skill installation failed: {install_error}; rollback also failed: \
-                 {rollback_error}"
-            ))),
+            Some(rollback_error) => WorkflowError::io(
+                ".",
+                io::Error::other(format!(
+                    "skill installation failed: {install_error}; rollback also failed: \
+                     {rollback_error}"
+                )),
+            ),
         }
     }
 }

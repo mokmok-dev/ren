@@ -52,10 +52,11 @@ pub fn write_plan(
     force: bool,
 ) -> Result<(), WorkflowError> {
     if let Some(parent) = plan.path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).map_err(|error| WorkflowError::io(parent, error))?;
     }
     if force {
-        fs::write(&plan.path, &plan.contents)?;
+        fs::write(&plan.path, &plan.contents)
+            .map_err(|error| WorkflowError::io(&plan.path, error))?;
         return Ok(());
     }
 
@@ -68,9 +69,10 @@ pub fn write_plan(
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {
             return Err(WorkflowError::WorkflowExists(plan.path.clone()));
         },
-        Err(error) => return Err(WorkflowError::Io(error)),
+        Err(error) => return Err(WorkflowError::io(&plan.path, error)),
     };
-    file.write_all(plan.contents.as_bytes())?;
+    file.write_all(plan.contents.as_bytes())
+        .map_err(|error| WorkflowError::io(&plan.path, error))?;
     Ok(())
 }
 

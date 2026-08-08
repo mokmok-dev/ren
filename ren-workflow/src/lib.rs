@@ -332,7 +332,7 @@ fn init_base(scope: InitScope) -> Result<PathBuf, WorkflowError> {
             Ok(PathBuf::from(home))
         },
         InitScope::Project => {
-            let cwd = std::env::current_dir()?;
+            let cwd = std::env::current_dir().map_err(|error| WorkflowError::io(".", error))?;
             Ok(registry::repo_root(&cwd))
         },
     }
@@ -356,7 +356,9 @@ fn run_workflow(args: &RunArgs) -> Result<(), WorkflowError> {
     }
 
     let mut journal = match &args.resume {
-        Some(path) => Journal::from_json(&fs::read_to_string(path)?)?,
+        Some(path) => Journal::from_json(
+            &fs::read_to_string(path).map_err(|error| WorkflowError::io(path, error))?,
+        )?,
         None => Journal::new(),
     };
     if args.retry_failed {
@@ -398,7 +400,7 @@ fn load_target(target: &str) -> Result<String, WorkflowError> {
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("rhai"));
     if looks_like_path && path.is_file() {
-        return fs::read_to_string(path).map_err(WorkflowError::from);
+        return fs::read_to_string(path).map_err(|error| WorkflowError::io(path, error));
     }
     let workflow = resolve(target)?;
     load_source(&workflow)
@@ -461,7 +463,7 @@ fn create_workflow(args: &CreateArgs) -> Result<(), WorkflowError> {
             ));
         },
     };
-    let cwd = std::env::current_dir()?;
+    let cwd = std::env::current_dir().map_err(|error| WorkflowError::io(".", error))?;
     let home = std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
@@ -497,7 +499,7 @@ fn bridge_base(scope: bridge::BridgeScope) -> Result<PathBuf, WorkflowError> {
             Ok(PathBuf::from(home))
         },
         bridge::BridgeScope::Project => {
-            let cwd = std::env::current_dir()?;
+            let cwd = std::env::current_dir().map_err(|error| WorkflowError::io(".", error))?;
             Ok(registry::repo_root(&cwd))
         },
     }
